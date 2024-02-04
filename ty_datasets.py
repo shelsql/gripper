@@ -69,6 +69,8 @@ class TrackingDataset(Dataset):
         super().__init__()
         print("Loading pose tracking dataset...")
         self.dataset_location = dataset_location
+        self.video_dirs = glob.glob(dataset_location + "/*")
+        print("Found %d videos in %s" % (len(self.video_dirs), self.dataset_location))
     def __getitem__(self, index):
         return
     def __len__(self):
