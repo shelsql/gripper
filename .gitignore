@@ -1,0 +1,9 @@
+render*/
+logs*/
+dinov2_weights/
+franka_hand_obj/
+__pycache__/
+match_demo_vis/
+match_vis/
+pointclouds/
+1.py
