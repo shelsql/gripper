@@ -143,6 +143,7 @@ a = np.where(mask2 > 0)
 image2 = image2[np.min(a[0]):np.max(a[0])+1, np.min(a[1]):np.max(a[1])+1]
 mask2 = mask2[np.min(a[0]):np.max(a[0])+1, np.min(a[1]):np.max(a[1])+1]
 image_tensor2, grid_size2, resize_scale2 = dm.prepare_image(image2)
+print(image_tensor2.max(), image_tensor2.min(), image_tensor2.mean())
 features2 = dm.extract_features(image_tensor2)
 print(features2.shape, features2.max(), features2.min(), features2.mean())
 
@@ -176,7 +177,7 @@ for n in range(32):
   cosine_sims = pairwise_cosine_similarity(torch.tensor(features1), torch.tensor(features2))
   #print(cosine_sims.shape)
   print(cosine_sims.max(), cosine_sims.min())
-  matches = torch.nonzero(cosine_sims > 0.75)
+  matches = torch.nonzero(cosine_sims > 0.8)
   print(matches.shape, matches[:10])
 
   #plt.plot(sorted(distances))

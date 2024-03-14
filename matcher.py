@@ -19,7 +19,7 @@ class Dinov2Matcher:
                  model_name="dinov2_vitl14_reg",
                  size=448,
                  half_precision=False,
-                 threshold=0.9,
+                 threshold=0.5,
                  upscale_ratio=1,
                  device="cuda"):
         self.repo_name = repo_name
@@ -70,7 +70,7 @@ class Dinov2Matcher:
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
-        rgbs = images[:,0:3] # B, 3, H, W
+        rgbs = images[:,0:3] / 255.0 # B, 3, H, W
         depths = images[:,3:4] # B, 1, H, W
         masks = images[:,4:5] # B, 1, H, W
         bboxes = get_2dbboxes(masks[:,0]) # B, 4
@@ -84,13 +84,14 @@ class Dinov2Matcher:
             cropped_mask = F.interpolate(cropped_mask, size=(self.size, self.size), mode="nearest")
             cropped_rgbs[b:b+1] = cropped_rgb
             cropped_masks[b:b+1] = cropped_mask
-        cropped_rgbs = self.transform(cropped_rgbs)
+        #cropped_rgbs = self.transform(cropped_rgbs)
         cropped_rgbs = cropped_rgbs.to(self.device)
         bboxes = torch.tensor(bboxes, device = self.device)
         return cropped_rgbs, cropped_masks, bboxes
     
     def extract_features(self, images):
         # images: B, C, H, W  torch.tensor
+        #print(images.max(), images.min(), images.mean())
         with torch.inference_mode():
             if self.half_precision:
                 image_batch = images.half().to(self.device)
@@ -104,6 +105,7 @@ class Dinov2Matcher:
             if self.upscale_ratio != 1:
                 tokens = F.interpolate(tokens, scale_factor = self.upscale_ratio)
             #print(tokens.shape)
+            print(tokens.max(), tokens.min(), tokens.mean())
         return tokens # B, C, H, W
     
     def idx_to_2d_coords(self, idxs, feat_size, test_bboxes):
@@ -145,7 +147,9 @@ class Dinov2Matcher:
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         assert(feat_H == feat_W)
         feat_size = feat_H
+        #print(images[:,:3].max(),images[:,:3].min(),images[:,:3].mean())
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
+        #print(cropped_rgbs.max(), cropped_rgbs.min(), cropped_rgbs.mean())
         features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         N_tokens = feat_H * feat_W
         #print(features.shape)
@@ -184,7 +188,6 @@ class Dinov2Matcher:
     def vis_2d_matches(self, images, matches_2d, size = 360):
         #TODO: Resize images, transform coords, draw lines
         B, C, H, W = images.shape
-        print(images.shape)
         assert(C == 5)
         rgb_0 = images[0, :3].permute(1, 2, 0).cpu().numpy() # H, W, 3
         N_ref, C, H_ref, W_ref = self.ref_images.shape
@@ -212,13 +215,15 @@ class Dinov2Matcher:
         feats = feats.permute(0, 2, 3, 1).reshape(B, H_feat*W_feat, C_feat).cpu().numpy() # B, H*W, 1024
         feat_masks = feat_masks.permute(0, 2, 3, 1).squeeze().cpu().numpy()
         reshaped_masks = feat_masks.reshape(B, H_feat*W_feat)
-        print(feat_masks.shape)
+        #print(feat_masks.shape)
         pca = PCA(n_components=3)
         for i in range(B):
             feat_map = np.zeros((H_feat, W_feat, 3))
             pca_feats = pca.fit_transform(feats[i, reshaped_masks[i] > 0]) # H*W, 3
+            print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
+            pca_feats = (pca_feats - np.min(pca_feats)) / (np.max(pca_feats) - np.min(pca_feats))
+            print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
             feat_map[feat_masks[i] > 0] = pca_feats
-            feat_map = (feat_map - np.min(feat_map)) / (np.max(feat_map) - np.min(feat_map))
             feat_map = feat_map*255
             cv2.imwrite("./match_vis/ref_feat_%.2d.png" % i, feat_map)
             
