@@ -15,9 +15,16 @@ from sklearn.decomposition import PCA
 import os
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
+def vis_rgbs(rgb, name):
+    rgb = rgb.permute(1, 2, 0).cpu().numpy()
+    print("Visualizing image", name, rgb.shape, np.max(rgb), np.min(rgb), np.mean(rgb))
+    rgb = (rgb - np.min(rgb)) / (np.max(rgb) - np.min(rgb))
+    rgb *= 255
+    cv2.imwrite("./match_demo_vis/cropped_rgb_" + name + ".png", rgb)
+      
 class Dinov2Matcher:
 
-  def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitl14_reg", smaller_edge_size=448, half_precision=False, device="cuda"):
+  def __init__(self, repo_name="facebookresearch/dinov2", model_name="dinov2_vitl14_reg", smaller_edge_size=448, half_precision=False, device="cuda:3"):
     self.repo_name = repo_name
     self.model_name = model_name
     self.smaller_edge_size = smaller_edge_size
@@ -83,6 +90,7 @@ class Dinov2Matcher:
     if resized_mask is not None:
       tokens = tokens[resized_mask]
     reduced_tokens = pca.fit_transform(tokens.astype(np.float32))
+    print(np.max(reduced_tokens), np.min(reduced_tokens), reduced_tokens.shape)
     if resized_mask is not None:
       tmp_tokens = np.zeros((*resized_mask.shape, 3), dtype=reduced_tokens.dtype)
       tmp_tokens[resized_mask] = reduced_tokens
@@ -90,6 +98,29 @@ class Dinov2Matcher:
     reduced_tokens = reduced_tokens.reshape((*grid_size, -1))
     normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
     return normalized_tokens
+  
+  
+  def vis_features(self, images, feat_masks, feats, i):
+    C, H, W = images.shape
+    N_tokens, C_feat = feats.shape
+    H_feat = H //14
+    W_feat = W //14
+    images = images.permute(1, 2, 0).cpu().numpy() # H, W, 3
+    #feats = feats.reshape(H_feat, W_feat, C_feat)# H*W, 1024
+    reshaped_masks = feat_masks
+    feat_masks = feat_masks.reshape(H_feat, W_feat)
+    print(images.shape, feats.shape, feat_masks.shape)
+    pca = PCA(n_components=3)
+    feat_map = np.zeros((H_feat, W_feat, 3))
+    feats_i = feats[reshaped_masks > 0].astype(np.float32)
+    print(np.max(feats_i), np.min(feats_i), np.mean(feats_i))
+    pca_feats = pca.fit_transform(feats_i) # H*W, 3
+    print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
+    pca_feats = (pca_feats - np.min(pca_feats)) / (np.max(pca_feats) - np.min(pca_feats))
+    #print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
+    feat_map[feat_masks > 0] = pca_feats
+    feat_map = feat_map*255
+    cv2.imwrite("./match_demo_vis/ref_feat_%.2d.png" % i, feat_map)
 
 
 
@@ -107,8 +138,8 @@ dm = Dinov2Matcher(half_precision=False)
 image_tensor1, grid_size1, resize_scale1 = dm.prepare_image(image1)
 features1 = dm.extract_features(image_tensor1)
 print(features1.shape, features1.max(), features1.min(), features1.mean())
-for i in range(features1.shape[0]):
-  #print(features1[i,:10])
+for i in range(10):
+  print(features1[i,:10])
   pass
 
 # Visualization
@@ -166,19 +197,22 @@ for n in range(32):
   a = np.where(mask1 > 0)
   image1 = image1[np.min(a[0]):np.max(a[0])+1, np.min(a[1]):np.max(a[1])+1]
   mask1 = mask1[np.min(a[0]):np.max(a[0])+1, np.min(a[1]):np.max(a[1])+1]
-  image1 = image1[::-1]
-  mask1 = mask1[::-1].astype(np.uint8)
-  image1 = cv2.resize(image1, dsize=(0,0), fx=0.15, fy=0.15, interpolation=cv2.INTER_LINEAR)
-  mask1 = cv2.resize(mask1, dsize=(0,0), fx=0.15, fy=0.15, interpolation=cv2.INTER_NEAREST) >0
+  #image1 = image1[::-1]
+  #mask1 = mask1[::-1].astype(np.uint8)
+  #image1 = cv2.resize(image1, , interpolation=cv2.INTER_LINEAR)
+  #mask1 = cv2.resize(mask1, dsize=(0,0), fx=0.15, fy=0.15, interpolation=cv2.INTER_NEAREST) >0
   image_tensor1, grid_size1, resize_scale1 = dm.prepare_image(image1)
+  vis_rgbs(image_tensor1, str(n))
   features1 = dm.extract_features(image_tensor1)
+  resized_mask = dm.prepare_mask(mask1, grid_size1, resize_scale1)
+  dm.vis_features(image_tensor1, resized_mask, features1, n)
   print(features1.shape, features1.max(), features1.min(), features1.mean())
 
   cosine_sims = pairwise_cosine_similarity(torch.tensor(features1), torch.tensor(features2))
   #print(cosine_sims.shape)
-  print(cosine_sims.max(), cosine_sims.min())
+  #print(cosine_sims.max(), cosine_sims.min())
   matches = torch.nonzero(cosine_sims > 0.8)
-  print(matches.shape, matches[:10])
+  #print(matches.shape, matches[:10])
 
   #plt.plot(sorted(distances))
   #plt.savefig("./match_demo_vis/dists.png")

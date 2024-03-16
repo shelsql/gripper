@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import cv2
 from tqdm import tqdm
 
-from utils.spd import get_2dbboxes, create_3dmeshgrid
+from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
@@ -19,9 +19,9 @@ class Dinov2Matcher:
                  model_name="dinov2_vitl14_reg",
                  size=448,
                  half_precision=False,
-                 threshold=0.5,
+                 threshold=0.75,
                  upscale_ratio=1,
-                 device="cuda"):
+                 device="cuda:3"):
         self.repo_name = repo_name
         self.model_name = model_name
         self.size = size
@@ -30,14 +30,29 @@ class Dinov2Matcher:
         self.upscale_ratio = upscale_ratio
         self.device = device
         
-        ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
-        ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
-        ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3)
-        ref_images = torch.concat([ref_rgbs[0], ref_depths[0,:,0:1], ref_masks[0,:,0:1]], axis = 1)
+        ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
+        ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).squeeze()
+        ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).squeeze()
+        c2ws = torch.Tensor(refs['c2ws'][0]).float()
+        
+        ref_rgbs = torch.flip(ref_rgbs, dims = [2])
+        ref_depths = torch.flip(ref_depths, dims = [2])
+        ref_masks = torch.flip(ref_masks, dims = [2])
+        
+        flip_x = torch.tensor([[1,0,0,0],[0,-1,0,0],[0,0,1,0],[0,0,0,1]])
+        flip_x = flip_x.unsqueeze(0).repeat(32, 1, 1).float()
+        c2ws = torch.bmm(c2ws, flip_x)
+        
+        ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
+        ref_depths = F.interpolate(ref_depths, scale_factor=0.15, mode="bilinear")
+        ref_masks = F.interpolate(ref_masks, scale_factor=0.15, mode="nearest")
+        
+        ref_images = torch.concat([ref_rgbs, ref_depths[:,0:1], ref_masks[:,0:1]], axis = 1).to(device)
     
-        self.ref_c2ws = refs['c2ws']
+        self.ref_c2ws = c2ws.to(device)
         self.model_pc = model_pointcloud
         self.ref_images = ref_images
+        self.ref_intrinsics = refs['intrinsics']
 
         if self.half_precision:
             self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
@@ -56,7 +71,7 @@ class Dinov2Matcher:
         print("Calculating reference view features...")
         
         cropped_ref_rgbs, cropped_ref_masks, ref_bboxes = self.prepare_images(ref_images)
-        print(cropped_ref_rgbs.shape)
+        #print(cropped_ref_rgbs.shape)
         self.ref_features = self.extract_features(cropped_ref_rgbs)
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         self.N_refs = N_refs
@@ -64,7 +79,8 @@ class Dinov2Matcher:
         feat_size = feat_H
         self.feat_masks = F.interpolate(cropped_ref_masks, size = (feat_size, feat_size), mode = "nearest") # Nref, 1, 32, 32
         self.ref_bboxes = ref_bboxes
-        self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
+        #self.vis_rgbs(cropped_ref_rgbs)
+        #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
@@ -84,7 +100,7 @@ class Dinov2Matcher:
             cropped_mask = F.interpolate(cropped_mask, size=(self.size, self.size), mode="nearest")
             cropped_rgbs[b:b+1] = cropped_rgb
             cropped_masks[b:b+1] = cropped_mask
-        #cropped_rgbs = self.transform(cropped_rgbs)
+        cropped_rgbs = self.transform(cropped_rgbs)
         cropped_rgbs = cropped_rgbs.to(self.device)
         bboxes = torch.tensor(bboxes, device = self.device)
         return cropped_rgbs, cropped_masks, bboxes
@@ -99,13 +115,13 @@ class Dinov2Matcher:
                 image_batch = images.to(self.device)
 
             tokens = self.model.get_intermediate_layers(image_batch)[0]
-            B, C, N_tokens = tokens.shape
+            B, N_tokens, C = tokens.shape
             assert(N_tokens == self.size*self.size / 196)
-            tokens = tokens.reshape(B, C, self.size//14, self.size//14)
+            tokens = tokens.permute(0,2,1).reshape(B, C, self.size//14, self.size//14)
             if self.upscale_ratio != 1:
                 tokens = F.interpolate(tokens, scale_factor = self.upscale_ratio)
             #print(tokens.shape)
-            print(tokens.max(), tokens.min(), tokens.mean())
+            #print(tokens.max(), tokens.min(), tokens.mean())
         return tokens # B, C, H, W
     
     def idx_to_2d_coords(self, idxs, feat_size, test_bboxes):
@@ -149,6 +165,7 @@ class Dinov2Matcher:
         feat_size = feat_H
         #print(images[:,:3].max(),images[:,:3].min(),images[:,:3].mean())
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
+        #self.vis_rgbs(cropped_rgbs)
         #print(cropped_rgbs.max(), cropped_rgbs.min(), cropped_rgbs.mean())
         features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         N_tokens = feat_H * feat_W
@@ -167,7 +184,7 @@ class Dinov2Matcher:
         #print(cosine_sims.shape)
         max_sims, max_inds = torch.max(cosine_sims, axis = 3) # B, 1024, 32
         # Here we want to get rid of all the sims that are below the threshold
-        print(max_sims.shape, max_inds.shape)
+        #print(max_sims.shape, max_inds.shape)
         max_coords = create_3dmeshgrid(B, N_tokens, N_refs, device = self.device) # B, 1024, 32, 3
         filtered_inds = max_sims > self.threshold
         max_sims = max_sims[filtered_inds]
@@ -179,11 +196,36 @@ class Dinov2Matcher:
         # N, 6   batchno, coords, refno, coords
         #print(matches_2d_coords.shape)
         self.vis_2d_matches(images, matches_2d_coords)
-        return matches_2d_coords
+        matches_3d = self.match_2d_to_3d(matches_2d_coords)
+        #self.vis_3d_matches(images, matches_3d)
+        return matches_3d
     
     def match_2d_to_3d(self, matches_2d):
         #TODO: Project 2D coords to gripper space using ref intrinsics
-        pass
+        # matches_2d: N, 6  batchno, coords, refno, coords
+        # want to get N, 6  batchno, coords, 3dcoords
+        
+        # Unpack intrinsic matrix
+        fx = self.ref_intrinsics['fx'].item()
+        fy = self.ref_intrinsics['fy'].item()
+        cx = self.ref_intrinsics['cx'].item()
+        cy = self.ref_intrinsics['cy'].item()
+        
+        print("matches_2d:", matches_2d.shape)
+        ref_depths = self.ref_images[:,3] # N_ref, H, W
+        depths = ref_depths[matches_2d[:,3].int(), matches_2d[:,4].int(), matches_2d[:,5].int()]
+        cam_space_x = (matches_2d[:,5] - cx) * depths / fx
+        cam_space_y = (matches_2d[:,4] - cy) * depths / fy
+        cam_space_z = depths
+        cam_space_coords = torch.stack([cam_space_x, cam_space_y, cam_space_z], axis = 1) # N, 3
+        print("cam_space_coords:", cam_space_coords.shape)
+        c2ws = self.ref_c2ws[matches_2d[:, 3].int()]
+        print("c2ws:", c2ws.shape)
+        world_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2ws)
+        matches_3d = torch.zeros_like(matches_2d)
+        matches_3d[:,:3] = matches_2d[:,:3]
+        matches_3d[:,3:] = world_space_coords
+        return matches_3d
     
     def vis_2d_matches(self, images, matches_2d, size = 360):
         #TODO: Resize images, transform coords, draw lines
@@ -208,6 +250,51 @@ class Dinov2Matcher:
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
             cv2.imwrite("./match_vis/match2d_%.2d.png" % i_ref, full_img)
             
+    def vis_3d_matches(self, images, matches_3d, down=2):
+        #TODO: Resize images, transform coords, draw lines
+        B, C, H, W = images.shape
+        assert(C == 5)
+        rgb_0 = images[0, :3].permute(1, 2, 0).cpu().numpy() # H, W, 3
+        N_ref, C, H_ref, W_ref = self.ref_images.shape
+        N, D = matches_3d.shape
+        matches_3d = matches_3d[matches_3d[:,0] == 0]
+        assert(D == 6)
+        camera_K = torch.zeros((3,3), device = self.device)
+        camera_K[0,0] = self.ref_intrinsics['fx']
+        camera_K[1,1] = self.ref_intrinsics['fy']
+        camera_K[0,2] = self.ref_intrinsics['cx']
+        camera_K[1,2] = self.ref_intrinsics['cy']
+        camera_K[2,2] = 1
+        
+        for i_ref in tqdm(range(self.N_refs)):
+            ref_rgb = self.ref_images[i_ref, :3].permute(1, 2, 0).cpu().numpy() # H, W, 3
+            ref_rgb = cv2.resize(ref_rgb, dsize=(640,360),interpolation=cv2.INTER_LINEAR)
+            H_ref = 360
+            W_ref = 640
+            #matches = matches_3d[matches_3d[:,3] == i_ref] # N_match, 6
+            coords_3d = matches_3d[:, 3:]
+            if coords_3d.shape[0] == 0:
+                print("Ref %.2d skipped"% i_ref)
+                continue
+            c2w = self.ref_c2ws[i_ref]
+            coords_3d_homo = torch.concat([coords_3d, torch.ones((coords_3d.shape[0],1), device = coords_3d.device)], axis=1)
+            coords_3d_cam = torch.matmul(torch.linalg.inv(c2w), coords_3d_homo.permute(1,0)).permute(1,0)
+            coords_3d_cam = coords_3d_cam[:,:3] / coords_3d_cam[:,3:4]
+            coords_2d = torch.matmul(camera_K, coords_3d_cam.permute(1,0)).permute(1,0)
+            coords_2d = coords_2d[:,:2] / coords_2d[:,2:3]
+            full_img = np.zeros((max(H_ref, H), W_ref + W, 3))
+            full_img[:H,:W] = rgb_0
+            full_img[:H_ref, W:] = ref_rgb
+            for i_match in range(matches_3d.shape[0]):
+                y_1, x_1 = matches_3d[i_match,1].int().item(), matches_3d[i_match,2].int().item()
+                y_2, x_2 = coords_2d[i_match,1].int().item(), coords_2d[i_match,0].int().item()
+                y_2 //= 3
+                x_2 //= 3
+                x_2 += W
+                #print(x_1, y_1, x_2, y_2)
+                full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
+            cv2.imwrite("./match_vis/match3d_%.2d.png" % i_ref, full_img)
+            
     def vis_features(self, images, feat_masks, feats):
         B, C, H, W = images.shape
         B, C_feat, H_feat, W_feat = feats.shape
@@ -216,15 +303,27 @@ class Dinov2Matcher:
         feat_masks = feat_masks.permute(0, 2, 3, 1).squeeze().cpu().numpy()
         reshaped_masks = feat_masks.reshape(B, H_feat*W_feat)
         #print(feat_masks.shape)
-        pca = PCA(n_components=3)
         for i in range(B):
+            pca = PCA(n_components=3)
             feat_map = np.zeros((H_feat, W_feat, 3))
-            pca_feats = pca.fit_transform(feats[i, reshaped_masks[i] > 0]) # H*W, 3
-            print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
+            feats_i = feats[i, reshaped_masks[i] > 0].astype(np.float32)
+            for j in range(10):
+                #print(feats_i[j, :10])
+                pass
+            #print(np.max(feats_i), np.min(feats_i), np.mean(feats_i))
+            pca_feats = pca.fit_transform(feats_i) # H*W, 3
+            #print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
             pca_feats = (pca_feats - np.min(pca_feats)) / (np.max(pca_feats) - np.min(pca_feats))
-            print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
+            #print(np.max(pca_feats), np.min(pca_feats), pca_feats.shape)
             feat_map[feat_masks[i] > 0] = pca_feats
             feat_map = feat_map*255
             cv2.imwrite("./match_vis/ref_feat_%.2d.png" % i, feat_map)
             
-            
+    def vis_rgbs(self, rgbs):
+        rgbs = rgbs.permute(0, 2, 3, 1).cpu().numpy()
+        for i in range(rgbs.shape[0]):
+            rgb = rgbs[i]
+            print("Visualizing image", str(i), rgb.shape, np.max(rgb), np.min(rgb), np.mean(rgb))
+            rgb = (rgb - np.min(rgb)) / (np.max(rgb) - np.min(rgb))
+            rgb *= 255
+            cv2.imwrite("./match_vis/cropped_rgb_%.2d.png" % i, rgb)

@@ -833,7 +833,8 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     # Get dimensions
     H, W = depth_map.shape
     
-    depth_map[mask == 0] = -1
+    if mask is not None:
+        depth_map[mask == 0] = -1
     
     # Unpack intrinsic matrix
     fx = intrinsics['fx'].item()
@@ -845,9 +846,9 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     u, v = np.meshgrid(np.arange(W), np.arange(H))
     
     # Convert pixel coordinates to camera coordinates
-    x = (u - cx) * depth_map.numpy() / fx
-    y = (v - cy) * depth_map.numpy() / fy
-    z = depth_map.numpy()
+    x = (u - cx) * depth_map.cpu().numpy() / fx
+    y = (v - cy) * depth_map.cpu().numpy() / fy
+    z = depth_map.cpu().numpy()
     
     # Reshape to (B*S, H*W)
     x = np.reshape(x, (-1))
@@ -860,6 +861,17 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     pointcloud = pointcloud[pointcloud[:,2] > 0]
     
     return pointcloud
+
+def image_coords_to_camera_space(depth_map, coords_2d, intrinsics):
+    
+    # Unpack intrinsic matrix
+    fx = intrinsics['fx'].item()
+    fy = intrinsics['fy'].item()
+    cx = intrinsics['cx'].item()
+    cy = intrinsics['cy'].item()
+    
+    depths = depth_map[coords_2d]
+    pass
 
 def save_pointcloud(pointcloud, filename):
     """
@@ -883,6 +895,22 @@ def transform_pointcloud(pointcloud, transformation_matrix):
     
     # Divide by the last coordinate (homogeneous division)
     transformed_points = transformed_points[:, :3] / transformed_points[:, 3][:, np.newaxis]
+    
+    return transformed_points
+
+def transform_batch_pointcloud_torch(pointcloud, transformation_matrix):
+    
+    N, D = pointcloud.shape
+    assert(N == transformation_matrix.shape[0])
+    # Append a column of ones to make homogeneous coordinates
+    ones = torch.ones((pointcloud.shape[0], 1), device = pointcloud.device)
+    homogeneous_points = torch.concat([pointcloud, ones],axis=1).unsqueeze(2) # N, 4, 1
+    
+    # Perform transformation
+    transformed_points = torch.bmm(transformation_matrix, homogeneous_points).squeeze() # N, 4
+    
+    # Divide by the last coordinate (homogeneous division)
+    transformed_points = transformed_points[:, :3] / transformed_points[:, 3:4]
     
     return transformed_points
 
