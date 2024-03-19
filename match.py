@@ -52,7 +52,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     
     masks = (masks >= 9).float()
     images = torch.concat([rgbs, depths, masks[:,0:1]], axis = 1)
-    matches_3d = matcher.match_batch(images)  # N, 6
+    matches_3d = matcher.match_and_fuse(images)  # N, 6
 
     test_camera_K = np.zeros((3,3))
     test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
@@ -90,7 +90,7 @@ def main(
         log_dir='./logs_match',
         max_iters=1,
         log_freq=1,
-        device_ids=[3],
+        device_ids=[0],
 ):
     device = 'cuda:%d' % device_ids[0]
     
@@ -112,7 +112,7 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    ref_dataset = ReferenceDataset(dataset_location="./rendered_without_env")
+    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)

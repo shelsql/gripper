@@ -41,8 +41,8 @@ class ReferenceDataset(Dataset):
             path = glob_rgb_path[:-8]
         
             rgb_path = path + "_rgb.png"
-            depth_path = path + "_depth.exr"
-            mask_path = path + "_id.exr"
+            depth_path = path + "_depth1.exr"
+            mask_path = path + "_id1.exr"
             c2w_path = path + "_c2w.npy"
             
             #print(rgb_path)

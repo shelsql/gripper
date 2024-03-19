@@ -914,6 +914,45 @@ def transform_batch_pointcloud_torch(pointcloud, transformation_matrix):
     
     return transformed_points
 
+def transform_pointcloud_torch(pointcloud, transformation_matrix):
+    N, D = pointcloud.shape
+    N_trans, D1, D2 = transformation_matrix.shape
+    assert(D1==4)
+    assert(D2==4)
+    #pointcloud = pointcloud.unsqueeze(0).repeat(N_trans,1,1)
+    
+    # Append a column of ones to make homogeneous coordinates
+    ones = torch.ones((pointcloud.shape[0], 1), device = pointcloud.device)
+    homogeneous_points = torch.concat([pointcloud, ones],axis=1).permute(1,0).float() # 4, N
+    homogeneous_points = homogeneous_points.unsqueeze(0).repeat(N_trans, 1, 1) # N_trans, 4, N
+    transformed_points = torch.bmm(transformation_matrix, homogeneous_points).permute(0,2,1) # N_trans, N, 4
+    transformed_points = transformed_points[:,:,:3] / transformed_points[:,:,3:4]
+    return transformed_points
+    
+def project_points(cam_space_coords, intrinsics):
+    
+    # Unpack intrinsic matrix
+    fx = intrinsics['fx'].item()
+    fy = intrinsics['fy'].item()
+    cx = intrinsics['cx'].item()
+    cy = intrinsics['cy'].item()
+    
+    K = np.zeros((3,4))
+    K[0,0] = fx
+    K[1,1] = fy
+    K[0,2] = cx
+    K[1,2] = cy
+    K[2,2] = 1
+    
+    B, N, D = cam_space_coords.shape
+    cam_space_coords = cam_space_coords.reshape(B*N, D).cpu().numpy() # N, 3
+    ones = np.ones((cam_space_coords.shape[0], 1))
+    homo_coords = np.concatenate([cam_space_coords, ones], axis=1) # N, 4
+    img_coords = np.dot(K, homo_coords.T).T # N, 3
+    img_coords = img_coords[:,:2] / img_coords[:,2:3]
+    img_coords = img_coords.reshape(B, N, 2)
+    return img_coords
+
 def get_2dbboxes(masks):
     
     if len(masks.shape) == 4:

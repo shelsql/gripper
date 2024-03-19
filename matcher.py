@@ -3,12 +3,14 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 import torch.nn.functional as F
-from torchmetrics.functional import pairwise_cosine_similarity
+from torchmetrics.functional import pairwise_cosine_similarity, pairwise_euclidean_distance
 import matplotlib.pyplot as plt
 import cv2
 from tqdm import tqdm
+import math
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
+from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
 
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
@@ -21,7 +23,7 @@ class Dinov2Matcher:
                  half_precision=False,
                  threshold=0.75,
                  upscale_ratio=1,
-                 device="cuda:3"):
+                 device="cuda:0"):
         self.repo_name = repo_name
         self.model_name = model_name
         self.size = size
@@ -43,14 +45,14 @@ class Dinov2Matcher:
         flip_x = flip_x.unsqueeze(0).repeat(32, 1, 1).float()
         c2ws = torch.bmm(c2ws, flip_x)
         
-        ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
-        ref_depths = F.interpolate(ref_depths, scale_factor=0.15, mode="bilinear")
-        ref_masks = F.interpolate(ref_masks, scale_factor=0.15, mode="nearest")
+        #ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
+        #ref_depths = F.interpolate(ref_depths, scale_factor=0.15, mode="bilinear")
+        #ref_masks = F.interpolate(ref_masks, scale_factor=0.15, mode="nearest")
         
         ref_images = torch.concat([ref_rgbs, ref_depths[:,0:1], ref_masks[:,0:1]], axis = 1).to(device)
     
         self.ref_c2ws = c2ws.to(device)
-        self.model_pc = model_pointcloud
+        self.model_pc = torch.tensor(model_pointcloud, device=device)
         self.ref_images = ref_images
         self.ref_intrinsics = refs['intrinsics']
 
@@ -124,7 +126,7 @@ class Dinov2Matcher:
             #print(tokens.max(), tokens.min(), tokens.mean())
         return tokens # B, C, H, W
     
-    def idx_to_2d_coords(self, idxs, feat_size, test_bboxes):
+    def idx_to_2d_coords_2(self, idxs, feat_size, test_bboxes):
         N, D = idxs.shape # batchno, featidx, refno, featidx
         assert(D == 4)
         coords = torch.zeros((N,6), device = self.device) # batchno, coords, refno, coords
@@ -145,6 +147,43 @@ class Dinov2Matcher:
         #TODO finish this
         return coords
     
+    def idx_to_2d_coords(self, idxs, bboxes):
+        N, D = idxs.shape # imgidx, feat x, feat y
+        assert(D == 3)
+        coords = torch.zeros_like(idxs)
+        coords[:,0] = idxs[:,0]
+        batch_bboxes = bboxes[idxs[:,0]]
+        # Turn token idx into coord within 448*448 box
+        coords[:,1:3] = idxs[:,1:3] * self.model.patch_size + self.model.patch_size / 2
+        # Turn coord within 448*448 box to coord on full image
+        coords[:,1:3] = (coords[:,1:3] / 448.0 * (batch_bboxes[:,2:4] - batch_bboxes[:,0:2])) + batch_bboxes[:,0:2]
+        return coords
+    
+    def coords_2d_to_3d(self, coords, depth_maps, intrinsics, c2ws):
+        N, D = coords.shape
+        assert(D==3)
+        
+        # Unpack intrinsic matrix
+        fx = intrinsics['fx'].item()
+        fy = intrinsics['fy'].item()
+        cx = intrinsics['cx'].item()
+        cy = intrinsics['cy'].item()
+        
+        print("depth_maps", depth_maps.shape)
+        depths = depth_maps[coords[:,0].int(), coords[:,1].int(), coords[:,2].int()]
+        print("depths", depths.shape)
+        cam_space_x = (coords[:,2] - cx) * depths / fx
+        cam_space_y = (coords[:,1] - cy) * depths / fy
+        cam_space_z = depths
+        cam_space_coords = torch.stack([cam_space_x, cam_space_y, cam_space_z], axis = 1) # N, 3
+        
+        c2ws = c2ws[coords[:, 0].int()]
+        print("c2ws:", c2ws.shape)
+        world_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2ws)
+        print(world_space_coords.shape)
+        
+        return world_space_coords
+    
     def get_embedding_visualization(self, tokens, grid_size, resized_mask=None):
         pca = PCA(n_components=3)
         if resized_mask is not None:
@@ -158,6 +197,66 @@ class Dinov2Matcher:
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
+    def match_and_fuse(self, images):
+        B, C, H, W = images.shape
+        N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
+        assert(feat_H == feat_W)
+        feat_size = feat_H
+        cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
+        features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
+        N_tokens = feat_H * feat_W
+        #print(features.shape)
+        features = features.permute(0, 2, 3, 1).reshape(-1, feat_C) # B*N, C
+        ref_features = self.ref_features.permute(0, 2, 3, 1).reshape(-1, feat_C) # 32*N, C
+        cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
+        cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
+        cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, N_refs, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
+        batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
+        
+        self.vis_corr_map(cosine_sims, batch_feat_masks, cropped_rgbs)
+        
+        cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]
+        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]
+        test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
+        ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
+        test_idxs = test_idxs[batch_feat_masks[:,0] > 0]
+        ref_idxs = ref_idxs[self.feat_masks[:,0] > 0]
+        
+        test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
+        ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
+        ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2ws)
+        
+        ref_valid_idxs = torch.logical_and(ref_3d_coords[:,0]<1, ref_3d_coords[:,0]>-1)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,1]<1)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,1]>-1)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]<1)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-1)
+        
+        cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
+        ref_3d_coords = ref_3d_coords[ref_valid_idxs]
+        
+        dists_3d = pairwise_euclidean_distance(self.model_pc, ref_3d_coords).float() # N_pts, N_ref_pts
+        # Generate similarity field. We want shape N_pts, N_test_2d_pts
+        gaussian_var = 0.0001
+        gaussian_coeff = (1.0 / (gaussian_var*(math.sqrt(2*3.14159265)))) * torch.exp(-0.5 * torch.square(dists_3d / gaussian_var)) # N_pts, N_ref_pts
+        #print(gaussian_coeff.dtype, cosine_sims.dtype, ref_3d_coords.dtype)
+        sim_field = torch.matmul(gaussian_coeff, cosine_sims.permute(1, 0)) / ref_3d_coords.shape[0]
+        self.vis_sim_field(sim_field, test_2d_coords, images)
+        #print(cosine_sims.shape, ref_3d_coords.shape, sim_field.shape)
+        print(cosine_sims.max(), cosine_sims.min(), sim_field.max(), sim_field.min())
+        threshold = sim_field.max() * 0.8
+        max_sims, max_idxs = torch.max(sim_field, axis = 0) # max_idxs shape
+        max_idxs = max_idxs[max_sims > threshold]
+        #print(max_idxs.shape)
+        matches = torch.zeros((max_idxs.shape[0],6), device = self.device)
+        matches[:,3:] = self.model_pc[max_idxs]
+        #print(test_2d_coords.shape, (max_sims>threshold).shape)
+        matches[:,:3] = test_2d_coords[max_sims > threshold]
+        #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
+        #print(matches[:10])
+        self.vis_3d_matches(images, matches)
+        return matches
+        
     def match_batch(self, images):
         B, C, H, W = images.shape
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
@@ -192,7 +291,7 @@ class Dinov2Matcher:
         max_coords = max_coords[filtered_inds]
         #print(max_sims.shape, max_inds.shape, max_coords.shape) # shape is N_matches
         matches_2d_inds = torch.concat([max_coords, max_inds.unsqueeze(1)], axis = 1) # N, 4. Batchnumber test_featid refnumber ref_featid
-        matches_2d_coords = self.idx_to_2d_coords(matches_2d_inds, feat_size, bboxes)
+        matches_2d_coords = self.idx_to_2d_coords_2(matches_2d_inds, feat_size, bboxes)
         # N, 6   batchno, coords, refno, coords
         #print(matches_2d_coords.shape)
         self.vis_2d_matches(images, matches_2d_coords)
@@ -288,8 +387,8 @@ class Dinov2Matcher:
             for i_match in range(matches_3d.shape[0]):
                 y_1, x_1 = matches_3d[i_match,1].int().item(), matches_3d[i_match,2].int().item()
                 y_2, x_2 = coords_2d[i_match,1].int().item(), coords_2d[i_match,0].int().item()
-                y_2 //= 3
-                x_2 //= 3
+                y_2 *= 2
+                x_2 *= 2
                 x_2 += W
                 #print(x_1, y_1, x_2, y_2)
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
@@ -318,7 +417,62 @@ class Dinov2Matcher:
             feat_map[feat_masks[i] > 0] = pca_feats
             feat_map = feat_map*255
             cv2.imwrite("./match_vis/ref_feat_%.2d.png" % i, feat_map)
+    
+    def vis_corr_map(self, cosine_sims, batch_feat_mask, cropped_rgbs):
+        # cosine sims shape B, feat_H, feat_W, N_ref, feat_H, feat_W
+        coords = [14, 5]
+        for i in range(32):
+            corr_map = cosine_sims[0, coords[0], coords[1], i]
+            corr_map[self.feat_masks[i,0]==0] = 0
+            corr_map = corr_map.cpu().numpy()
+            corr_map = (corr_map - np.min(corr_map)) / (np.max(corr_map) - np.min(corr_map))
+            corr_img = np.zeros((32, 32, 3))
+            corr_img[:,:,2] = corr_map
+            full_img = np.zeros((32, 64, 3))
+            full_img[:,32:,:] = corr_img
+            rgb = F.interpolate(cropped_rgbs, size = (32, 32))[0].permute(1,2,0).cpu().numpy()
+            rgb = (rgb - np.min(rgb)) / (np.max(rgb) - np.min(rgb))
+            full_img[:,:32,:] = rgb
+            full_img[coords[0], coords[1],:] = np.array([0,0,1])
+            full_img*=255.0
+            cv2.imwrite("./match_vis/corr_map_%.2d.png"%i, full_img)
+    
+    def vis_sim_field(self, sim_field, test_2d_coords, images):
+        # sim_field N_model_pts, N_2d_pts
+        # test_2d_coords N_2d_pts, 3
+        # images B, 5, H, W
+        pt_id = 250
+        sims = sim_field[:,pt_id] # shape N_model_pts
+        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
+        #print(w2cs.shape)
+        sim_cam_space_coords = transform_pointcloud_torch(self.model_pc, w2cs) # 32, N, 3
+        print(sim_cam_space_coords.shape)
+        sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics)
+        #print(sim_img_coords.shape)
+        #print(sim_img_coords[:10])
+        for i in range(32):
+            full_img = np.zeros((360,1280,3))
+            test_img = images[0, :3].permute(1,2,0).cpu().numpy()
+            H, W, C = test_img.shape
+            full_img[:H, :W] = test_img
+            coord = test_2d_coords[pt_id]
+            #print(coord)
+            full_img[coord[1]-1:coord[1]+1, coord[2]-1:coord[2]+1] = np.array([0,0,255])
+            heat_map = np.zeros((180,320,3))
+            sim_coords = sim_img_coords[i].astype(int) # N, 2
+            for j in range(sim_coords.shape[0]):
+                heat_map[sim_coords[j,1], sim_coords[j,0],2] += sims[j]
+            heat_map = (heat_map - np.min(heat_map)) / (np.max(heat_map) - np.min(heat_map))
+            heat_map *= 255.0
+            heat_map = cv2.resize(heat_map, (640,360), interpolation=cv2.INTER_LINEAR)
+            ref_img = self.ref_images[i,4:5].repeat(3,1,1).permute(1,2,0).cpu().numpy()
+            ref_img = cv2.resize(ref_img, (640,360), interpolation=cv2.INTER_LINEAR)
+            ref_img = 1 - ((ref_img - np.min(ref_img)) / (np.max(ref_img) - np.min(ref_img)))
+            ref_img *= 255.0
+            full_img[:, W:] = np.clip(heat_map + ref_img, 0, 255)
+            cv2.imwrite("./match_vis/sim_field_%.2d.png"%i, full_img)
             
+              
     def vis_rgbs(self, rgbs):
         rgbs = rgbs.permute(0, 2, 3, 1).cpu().numpy()
         for i in range(rgbs.shape[0]):
