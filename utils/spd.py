@@ -881,9 +881,16 @@ def save_pointcloud(pointcloud, filename):
         pointcloud (numpy array): Point cloud array of shape (N, 3).
         filename (str): Name of the file to save.
     """
-    with open(filename, 'w') as f:
-        for point in pointcloud:
-            f.write(f"{point[0]} {point[1]} {point[2]}\n")
+    if torch.is_tensor(pointcloud):
+        pointcloud = pointcloud.cpu().numpy()
+    if pointcloud.shape[1] == 3:
+        with open(filename, 'w') as f:
+            for point in pointcloud:
+                f.write(f"{point[0]} {point[1]} {point[2]}\n")
+    if pointcloud.shape[1] == 6:
+        with open(filename, 'w') as f:
+            for point in pointcloud:
+                f.write(f"{point[0]} {point[1]} {point[2]} {point[3]} {point[4]} {point[5]}\n")
             
 def transform_pointcloud(pointcloud, transformation_matrix):
     

@@ -235,13 +235,17 @@ class Dinov2Matcher:
         cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
         ref_3d_coords = ref_3d_coords[ref_valid_idxs]
         
+        self.vis_sim_pts(cosine_sims, test_2d_coords, ref_3d_coords, images)
+        self.save_sim_pts(cosine_sims, ref_3d_coords)
+        
         dists_3d = pairwise_euclidean_distance(self.model_pc, ref_3d_coords).float() # N_pts, N_ref_pts
         # Generate similarity field. We want shape N_pts, N_test_2d_pts
-        gaussian_var = 0.0001
+        gaussian_var = 0.002
         gaussian_coeff = (1.0 / (gaussian_var*(math.sqrt(2*3.14159265)))) * torch.exp(-0.5 * torch.square(dists_3d / gaussian_var)) # N_pts, N_ref_pts
         #print(gaussian_coeff.dtype, cosine_sims.dtype, ref_3d_coords.dtype)
         sim_field = torch.matmul(gaussian_coeff, cosine_sims.permute(1, 0)) / ref_3d_coords.shape[0]
         self.vis_sim_field(sim_field, test_2d_coords, images)
+        self.save_sim_field(sim_field)
         #print(cosine_sims.shape, ref_3d_coords.shape, sim_field.shape)
         print(cosine_sims.max(), cosine_sims.min(), sim_field.max(), sim_field.min())
         threshold = sim_field.max() * 0.8
@@ -325,6 +329,28 @@ class Dinov2Matcher:
         matches_3d[:,:3] = matches_2d[:,:3]
         matches_3d[:,3:] = world_space_coords
         return matches_3d
+
+    def save_sim_pts(self, cosine_sims, ref_3d_coords):
+        pt_id = 200
+        sims = cosine_sims[pt_id]
+        sims = (sims - sims.min()) / (sims.max() - sims.min())
+        rgbs = torch.zeros_like(ref_3d_coords)
+        rgbs[:,0] = sims
+        rgbs[:,2] = 1 - sims
+        rgbs *= 255
+        rgb_pts = torch.concat([ref_3d_coords, rgbs], axis=1)
+        save_pointcloud(rgb_pts, "./pointclouds/sim_pts.txt")
+        
+    def save_sim_field(self, sim_field):
+        pt_id = 200
+        sims = sim_field[:,pt_id]
+        sims = (sims - sims.min()) / (sims.max() - sims.min())
+        rgbs = torch.zeros_like(self.model_pc)
+        rgbs[:,0] = sims
+        rgbs[:,2] = 1 - sims
+        rgbs *= 255
+        rgb_pts = torch.concat([self.model_pc, rgbs], axis=1)
+        save_pointcloud(rgb_pts, "./pointclouds/sim_field.txt")
     
     def vis_2d_matches(self, images, matches_2d, size = 360):
         #TODO: Resize images, transform coords, draw lines
@@ -437,11 +463,47 @@ class Dinov2Matcher:
             full_img*=255.0
             cv2.imwrite("./match_vis/corr_map_%.2d.png"%i, full_img)
     
+    def vis_sim_pts(self, cosine_sims, test_2d_coords, ref_3d_coords, images):
+        # cosine_sims N_2d_pts, N_3d_pts
+        # test_2d_coords N_2d_pts, 3
+        # images B, 5, H, W
+        pt_id = 200
+        coord = test_2d_coords[pt_id]
+        print("2D coords:", coord)
+        sims = cosine_sims[pt_id] # shape N_3d_pts
+        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
+        #print(w2cs.shape)
+        sim_cam_space_coords = transform_pointcloud_torch(ref_3d_coords, w2cs) # 32, N, 3
+        print(sim_cam_space_coords.shape)
+        sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics) # 32, N, 3
+        
+        for i in range(32):
+            full_img = np.zeros((360,1280,3))
+            test_img = images[0, :3].permute(1,2,0).cpu().numpy()
+            H, W, C = test_img.shape
+            full_img[:H, :W] = test_img
+            #print(coord)
+            full_img[coord[1]-1:coord[1]+1, coord[2]-1:coord[2]+1] = np.array([0,0,255])
+            heat_map = np.zeros((180,320,3))
+            sim_coords = sim_img_coords[i].astype(int) # N, 2
+            for j in range(sim_coords.shape[0]):
+                heat_map[sim_coords[j,1], sim_coords[j,0],2] += sims[j]
+            heat_map = (heat_map - np.min(heat_map)) / (np.max(heat_map) - np.min(heat_map))
+            heat_map *= 255.0
+            heat_map = cv2.resize(heat_map, (640,360), interpolation=cv2.INTER_LINEAR)
+            ref_img = self.ref_images[i,4:5].repeat(3,1,1).permute(1,2,0).cpu().numpy()
+            ref_img = cv2.resize(ref_img, (640,360), interpolation=cv2.INTER_LINEAR)
+            ref_img = 1 - ((ref_img - np.min(ref_img)) / (np.max(ref_img) - np.min(ref_img)))
+            ref_img *= 255.0
+            full_img[:, W:] = np.clip(heat_map + ref_img, 0, 255)
+            cv2.imwrite("./match_vis/sim_pts_%.2d.png"%i, full_img)
+            
+    
     def vis_sim_field(self, sim_field, test_2d_coords, images):
         # sim_field N_model_pts, N_2d_pts
         # test_2d_coords N_2d_pts, 3
         # images B, 5, H, W
-        pt_id = 250
+        pt_id = 200
         sims = sim_field[:,pt_id] # shape N_model_pts
         w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
         #print(w2cs.shape)
