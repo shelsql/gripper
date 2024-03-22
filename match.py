@@ -12,7 +12,7 @@ import sys
 from tqdm import tqdm
 
 from ty_datasets import PoseDataset, TrackingDataset
-from ref_dataset import ReferenceDataset
+from ref_dataset import ReferenceDataset, SimTestDataset
 from torch.utils.data import DataLoader
 from matcher import Dinov2Matcher
 
@@ -27,10 +27,10 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     metrics = {}
     
     rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
-    depths = torch.Tensor(d['depth']).float().unsqueeze(1).to(device)
+    depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
     masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
-    kptss = d['kpts']
-    npys = d['npy']
+    #kptss = d['kpts']
+    #npys = d['npy']
     intrinsics = d['intrinsics']
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).to(device) # B, S, C, H, W
@@ -41,6 +41,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     #print(kptss)
     #print(npys)
     
+    '''
     gripper_info = kptss[0]['keypoints'][8]
     print(gripper_info)
     gripper_t = torch.tensor(gripper_info["location_wrt_cam"]).numpy()
@@ -49,16 +50,22 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     gripper_rt[:3, :3] = gripper_r
     gripper_rt[:3, 3] = gripper_t
     gripper_rt[3, 3] = 1
+    '''
     
-    masks = (masks >= 9).float()
-    images = torch.concat([rgbs, depths, masks[:,0:1]], axis = 1)
+    print(rgbs.shape, depths.shape, masks.shape)
+    #masks = (masks >= 9).float()
+    images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
     matches_3d = matcher.match_and_fuse(images)  # N, 6
 
     test_camera_K = np.zeros((3,3))
-    test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
-    test_camera_K[1,1] = intrinsics['camera_settings'][0]['intrinsic_settings']['fy']
-    test_camera_K[0,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cx']
-    test_camera_K[1,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cy']
+    #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
+    #test_camera_K[1,1] = intrinsics['camera_settings'][0]['intrinsic_settings']['fy']
+    #test_camera_K[0,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cx']
+    #test_camera_K[1,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cy']
+    test_camera_K[0,0] = intrinsics['fx']
+    test_camera_K[1,1] = intrinsics['fy']
+    test_camera_K[0,2] = intrinsics['cx']
+    test_camera_K[1,2] = intrinsics['cy']
     test_camera_K[2,2] = 1
 
     for i in range(rgbs.shape[0]):
@@ -70,7 +77,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
         print("rt_matrix_inv", np.linalg.inv(rt_matrix))
         #print("gripper_rt", gripper_rt)
     
-    scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics['camera_settings'][0]['intrinsic_settings'])
+    scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics)
     save_pointcloud(scene_pointcloud / 1000.0, "pointclouds/scene.txt")
         
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
@@ -112,7 +119,8 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
+    vis_dataset = SimTestDataset()
+    ref_dataset = ReferenceDataset(dataset_location="./render_lowres", num_views=64)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
@@ -127,7 +135,7 @@ def main(
     global_step = 0
     
     gripper_path = "./franka_hand_obj/franka_hand.obj"
-    gripper_pointcloud = sample_points_from_mesh(gripper_path, n_pts=8192)
+    gripper_pointcloud = sample_points_from_mesh(gripper_path, fps=True, n_pts=8192)
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False)
     

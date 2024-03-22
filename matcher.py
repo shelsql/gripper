@@ -11,6 +11,7 @@ import math
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
+from utils.spd import calc_masked_batch_var, calc_coords_3d_var
 
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
@@ -21,7 +22,7 @@ class Dinov2Matcher:
                  model_name="dinov2_vitl14_reg",
                  size=448,
                  half_precision=False,
-                 threshold=0.75,
+                 threshold=0.8,
                  upscale_ratio=1,
                  device="cuda:0"):
         self.repo_name = repo_name
@@ -36,15 +37,9 @@ class Dinov2Matcher:
         ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).squeeze()
         ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).squeeze()
         c2ws = torch.Tensor(refs['c2ws'][0]).float()
+        o2ws = torch.Tensor(refs['obj_poses'][0]).float()
         
-        ref_rgbs = torch.flip(ref_rgbs, dims = [2])
-        ref_depths = torch.flip(ref_depths, dims = [2])
-        ref_masks = torch.flip(ref_masks, dims = [2])
-        
-        flip_x = torch.tensor([[1,0,0,0],[0,-1,0,0],[0,0,1,0],[0,0,0,1]])
-        flip_x = flip_x.unsqueeze(0).repeat(32, 1, 1).float()
-        c2ws = torch.bmm(c2ws, flip_x)
-        
+        num_refs = ref_rgbs.shape[0]
         #ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
         #ref_depths = F.interpolate(ref_depths, scale_factor=0.15, mode="bilinear")
         #ref_masks = F.interpolate(ref_masks, scale_factor=0.15, mode="nearest")
@@ -52,6 +47,10 @@ class Dinov2Matcher:
         ref_images = torch.concat([ref_rgbs, ref_depths[:,0:1], ref_masks[:,0:1]], axis = 1).to(device)
     
         self.ref_c2ws = c2ws.to(device)
+        self.ref_w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(num_refs)], axis = 0)
+        self.ref_o2ws = o2ws.to(device)
+        self.ref_w2os = torch.stack([torch.linalg.inv(self.ref_o2ws[i]) for i in range(num_refs)], axis = 0)
+        self.ref_c2os = torch.bmm(self.ref_w2os, self.ref_c2ws)
         self.model_pc = torch.tensor(model_pointcloud, device=device)
         self.ref_images = ref_images
         self.ref_intrinsics = refs['intrinsics']
@@ -92,8 +91,8 @@ class Dinov2Matcher:
         depths = images[:,3:4] # B, 1, H, W
         masks = images[:,4:5] # B, 1, H, W
         bboxes = get_2dbboxes(masks[:,0]) # B, 4
-        cropped_rgbs = torch.zeros((B, 3, self.size, self.size))
-        cropped_masks = torch.zeros((B, 1, self.size, self.size))
+        cropped_rgbs = torch.zeros((B, 3, self.size, self.size), device = self.device)
+        cropped_masks = torch.zeros((B, 1, self.size, self.size), device = self.device)
         for b in range(B):
             y_min, x_min, y_max, x_max = bboxes[b,0], bboxes[b,1], bboxes[b,2], bboxes[b,3]
             cropped_rgb = rgbs[b:b+1, :, y_min:y_max, x_min:x_max]
@@ -159,7 +158,7 @@ class Dinov2Matcher:
         coords[:,1:3] = (coords[:,1:3] / 448.0 * (batch_bboxes[:,2:4] - batch_bboxes[:,0:2])) + batch_bboxes[:,0:2]
         return coords
     
-    def coords_2d_to_3d(self, coords, depth_maps, intrinsics, c2ws):
+    def coords_2d_to_3d(self, coords, depth_maps, intrinsics, c2os):
         N, D = coords.shape
         assert(D==3)
         
@@ -177,12 +176,15 @@ class Dinov2Matcher:
         cam_space_z = depths
         cam_space_coords = torch.stack([cam_space_x, cam_space_y, cam_space_z], axis = 1) # N, 3
         
-        c2ws = c2ws[coords[:, 0].int()]
-        print("c2ws:", c2ws.shape)
-        world_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2ws)
-        print(world_space_coords.shape)
+        c2os = c2os[coords[:, 0].int()]
+        print("c2os:", c2os.shape)
+        obj_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2os)
+        print(obj_space_coords.shape)
         
-        return world_space_coords
+        ref_ids = coords[:,0:1]
+        ids_and_coords_3d = torch.concat([ref_ids, obj_space_coords], axis = 1)
+        
+        return ids_and_coords_3d
     
     def get_embedding_visualization(self, tokens, grid_size, resized_mask=None):
         pca = PCA(n_components=3)
@@ -202,6 +204,7 @@ class Dinov2Matcher:
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         assert(feat_H == feat_W)
         feat_size = feat_H
+        #print(images[:,4:5].sum())
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
         features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         N_tokens = feat_H * feat_W
@@ -215,47 +218,75 @@ class Dinov2Matcher:
         
         self.vis_corr_map(cosine_sims, batch_feat_masks, cropped_rgbs)
         
-        cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]
-        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]
+        #batch_max_sims = torch.max(cosine_sims.reshape(B, feat_H, feat_W, N_refs, feat_H*feat_W), axis = 4) # B, 32, 32, Nref
+        #good_refs = batch_max_sims > 0.9 # B, 32, 32, N_ref   bool
+        cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]  # N_batch_pts, Nref, 32, 32
+        #TODO calculate vars
+        #cosine_sims_vars = calc_masked_batch_var(cosine_sims, self.feat_masks, self.device)
+        #print(cosine_sims_vars.shape)
+        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
-        test_idxs = test_idxs[batch_feat_masks[:,0] > 0]
-        ref_idxs = ref_idxs[self.feat_masks[:,0] > 0]
+        test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
+        ref_idxs = ref_idxs[self.feat_masks[:,0] > 0] # N_ref_pts, 3
+        #good_refs = good_refs[batch_feat_masks[:,0] > 0] # N_batch_pts, N_ref
         
         test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
         ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
-        ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2ws)
+        ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2os)
         
-        ref_valid_idxs = torch.logical_and(ref_3d_coords[:,0]<1, ref_3d_coords[:,0]>-1)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,1]<1)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,1]>-1)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]<1)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-1)
+        ref_valid_idxs = torch.logical_and(ref_3d_coords[:,1]<10, ref_3d_coords[:,1]>-10)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]<10)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-10)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]<10)
+        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]>-10)
+        
+        #ref_valid_idxs = torch.logical_and(ref_valid_idxs, cosine_sims)
         
         cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
-        ref_3d_coords = ref_3d_coords[ref_valid_idxs]
+        ref_3d_coords = ref_3d_coords[ref_valid_idxs] # N_3d_ref_pts, 4
         
-        self.vis_sim_pts(cosine_sims, test_2d_coords, ref_3d_coords, images)
+        num_good_sims = torch.sum(cosine_sims > self.threshold, dim = 1)
+        good_pts = num_good_sims > 10 #Shape N_2d_pts
+        cosine_sims = cosine_sims[good_pts]
+        test_2d_coords = test_2d_coords[good_pts]
+        
+        ref_3d_coords_1 = ref_3d_coords.unsqueeze(0).repeat(cosine_sims.shape[0], 1, 1)
+        test_2d_coords_1 = test_2d_coords.unsqueeze(1).repeat(1, cosine_sims.shape[1], 1)
+        cosine_sim_coords = torch.concat([test_2d_coords_1, ref_3d_coords_1], axis=2)
+        sims_and_coords = torch.concat([cosine_sims.unsqueeze(2), cosine_sim_coords], axis=2) # N_test_2d_pts, N_3d_ref_pts, 8 (sim, batchid, x, y, refid, x, y, z)
+        
+        #print(sims_and_coords.shape)
+        target_point_vars = calc_coords_3d_var(sims_and_coords, self.threshold)
+        var_threshold = 0.01
+        
+        print(target_point_vars.shape)
+        #print(target_point_vars.max(), target_point_vars.min(), target_point_vars.mean())
+        #print(torch.max(target_point_vars, dim=1), torch.min(target_point_vars, dim=1), torch.mean(target_point_vars))
+        print(target_point_vars.max(), target_point_vars.min(), target_point_vars.mean())
+        print(target_point_vars[:10])
+        #print(torch.tensor(target_point_vars>0.1)[:10])
+        #exit()
+        
         self.save_sim_pts(cosine_sims, ref_3d_coords)
         
-        dists_3d = pairwise_euclidean_distance(self.model_pc, ref_3d_coords).float() # N_pts, N_ref_pts
+        #dists_3d = pairwise_euclidean_distance(self.model_pc, ref_3d_coords[:,1:]).float() # N_pts, N_ref_pts
         # Generate similarity field. We want shape N_pts, N_test_2d_pts
-        gaussian_var = 0.002
-        gaussian_coeff = (1.0 / (gaussian_var*(math.sqrt(2*3.14159265)))) * torch.exp(-0.5 * torch.square(dists_3d / gaussian_var)) # N_pts, N_ref_pts
+        #gaussian_var = 0.002
+        #gaussian_coeff = (1.0 / (gaussian_var*(math.sqrt(2*3.14159265)))) * torch.exp(-0.5 * torch.square(dists_3d / gaussian_var)) # N_pts, N_ref_pts
         #print(gaussian_coeff.dtype, cosine_sims.dtype, ref_3d_coords.dtype)
-        sim_field = torch.matmul(gaussian_coeff, cosine_sims.permute(1, 0)) / ref_3d_coords.shape[0]
-        self.vis_sim_field(sim_field, test_2d_coords, images)
-        self.save_sim_field(sim_field)
+        #sim_field = torch.matmul(gaussian_coeff, cosine_sims.permute(1, 0)) / ref_3d_coords.shape[0]
+        #self.vis_sim_field(sim_field, test_2d_coords, images)
+        #self.save_sim_field(sim_field)
         #print(cosine_sims.shape, ref_3d_coords.shape, sim_field.shape)
-        print(cosine_sims.max(), cosine_sims.min(), sim_field.max(), sim_field.min())
-        threshold = sim_field.max() * 0.8
-        max_sims, max_idxs = torch.max(sim_field, axis = 0) # max_idxs shape
-        max_idxs = max_idxs[max_sims > threshold]
-        #print(max_idxs.shape)
+        #print(cosine_sims.max(), cosine_sims.min(), sim_field.max(), sim_field.min())
+        #threshold = sim_field.max() * 0.8
+        max_sims, max_idxs = torch.max(cosine_sims, axis = 1) # max_idxs shape N_2d_pts
+        max_idxs = max_idxs[target_point_vars < 1]
         matches = torch.zeros((max_idxs.shape[0],6), device = self.device)
-        matches[:,3:] = self.model_pc[max_idxs]
+        matches[:,3:] = ref_3d_coords[max_idxs, 1:]
         #print(test_2d_coords.shape, (max_sims>threshold).shape)
-        matches[:,:3] = test_2d_coords[max_sims > threshold]
+        matches[:,:3] = test_2d_coords[target_point_vars < 1]
         #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
         #print(matches[:10])
         self.vis_3d_matches(images, matches)
@@ -322,27 +353,27 @@ class Dinov2Matcher:
         cam_space_z = depths
         cam_space_coords = torch.stack([cam_space_x, cam_space_y, cam_space_z], axis = 1) # N, 3
         print("cam_space_coords:", cam_space_coords.shape)
-        c2ws = self.ref_c2ws[matches_2d[:, 3].int()]
-        print("c2ws:", c2ws.shape)
-        world_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2ws)
+        c2os = self.ref_c2os[matches_2d[:, 3].int()]
+        print("c2os:", c2os.shape)
+        world_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2os)
         matches_3d = torch.zeros_like(matches_2d)
         matches_3d[:,:3] = matches_2d[:,:3]
         matches_3d[:,3:] = world_space_coords
         return matches_3d
 
     def save_sim_pts(self, cosine_sims, ref_3d_coords):
-        pt_id = 200
+        pt_id = 45
         sims = cosine_sims[pt_id]
         sims = (sims - sims.min()) / (sims.max() - sims.min())
-        rgbs = torch.zeros_like(ref_3d_coords)
+        rgbs = torch.zeros_like(ref_3d_coords[:,1:])
         rgbs[:,0] = sims
         rgbs[:,2] = 1 - sims
         rgbs *= 255
-        rgb_pts = torch.concat([ref_3d_coords, rgbs], axis=1)
+        rgb_pts = torch.concat([ref_3d_coords[:,1:], rgbs], axis=1)
         save_pointcloud(rgb_pts, "./pointclouds/sim_pts.txt")
         
     def save_sim_field(self, sim_field):
-        pt_id = 200
+        pt_id = 45
         sims = sim_field[:,pt_id]
         sims = (sims - sims.min()) / (sims.max() - sims.min())
         rgbs = torch.zeros_like(self.model_pc)
@@ -375,11 +406,13 @@ class Dinov2Matcher:
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
             cv2.imwrite("./match_vis/match2d_%.2d.png" % i_ref, full_img)
             
-    def vis_3d_matches(self, images, matches_3d, down=2):
+    def vis_3d_matches(self, images, matches_3d, size = (640,360)):
         #TODO: Resize images, transform coords, draw lines
         B, C, H, W = images.shape
+        print(images.shape)
         assert(C == 5)
         rgb_0 = images[0, :3].permute(1, 2, 0).cpu().numpy() # H, W, 3
+        rgb_0 = cv2.resize(rgb_0, dsize=size,interpolation=cv2.INTER_LINEAR)
         N_ref, C, H_ref, W_ref = self.ref_images.shape
         N, D = matches_3d.shape
         matches_3d = matches_3d[matches_3d[:,0] == 0]
@@ -393,29 +426,29 @@ class Dinov2Matcher:
         
         for i_ref in tqdm(range(self.N_refs)):
             ref_rgb = self.ref_images[i_ref, :3].permute(1, 2, 0).cpu().numpy() # H, W, 3
-            ref_rgb = cv2.resize(ref_rgb, dsize=(640,360),interpolation=cv2.INTER_LINEAR)
-            H_ref = 360
-            W_ref = 640
+            ref_rgb = cv2.resize(ref_rgb, dsize=size,interpolation=cv2.INTER_LINEAR)
             #matches = matches_3d[matches_3d[:,3] == i_ref] # N_match, 6
             coords_3d = matches_3d[:, 3:]
             if coords_3d.shape[0] == 0:
                 print("Ref %.2d skipped"% i_ref)
                 continue
-            c2w = self.ref_c2ws[i_ref]
+            c2o = self.ref_c2os[i_ref]
             coords_3d_homo = torch.concat([coords_3d, torch.ones((coords_3d.shape[0],1), device = coords_3d.device)], axis=1)
-            coords_3d_cam = torch.matmul(torch.linalg.inv(c2w), coords_3d_homo.permute(1,0)).permute(1,0)
+            coords_3d_cam = torch.matmul(torch.linalg.inv(c2o), coords_3d_homo.permute(1,0)).permute(1,0)
             coords_3d_cam = coords_3d_cam[:,:3] / coords_3d_cam[:,3:4]
             coords_2d = torch.matmul(camera_K, coords_3d_cam.permute(1,0)).permute(1,0)
             coords_2d = coords_2d[:,:2] / coords_2d[:,2:3]
-            full_img = np.zeros((max(H_ref, H), W_ref + W, 3))
-            full_img[:H,:W] = rgb_0
-            full_img[:H_ref, W:] = ref_rgb
+            full_img = np.zeros((size[1], size[0]*2, 3))
+            full_img[:,:size[0]] = rgb_0
+            full_img[:, size[0]:] = ref_rgb
             for i_match in range(matches_3d.shape[0]):
-                y_1, x_1 = matches_3d[i_match,1].int().item(), matches_3d[i_match,2].int().item()
-                y_2, x_2 = coords_2d[i_match,1].int().item(), coords_2d[i_match,0].int().item()
-                y_2 *= 2
-                x_2 *= 2
-                x_2 += W
+                y_1, x_1 = matches_3d[i_match,1].item(), matches_3d[i_match,2].item()
+                y_2, x_2 = coords_2d[i_match,1].item(), coords_2d[i_match,0].item()
+                y_1 = int(y_1 * (size[1] / H))
+                x_1 = int(x_1 * (size[0] / W))
+                y_2 = int(y_2 * (size[1] / H_ref))
+                x_2 = int(x_2 * (size[0] / W_ref))
+                x_2 += size[0]
                 #print(x_1, y_1, x_2, y_2)
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
             cv2.imwrite("./match_vis/match3d_%.2d.png" % i_ref, full_img)
@@ -467,13 +500,13 @@ class Dinov2Matcher:
         # cosine_sims N_2d_pts, N_3d_pts
         # test_2d_coords N_2d_pts, 3
         # images B, 5, H, W
-        pt_id = 200
+        pt_id = 45
         coord = test_2d_coords[pt_id]
         print("2D coords:", coord)
         sims = cosine_sims[pt_id] # shape N_3d_pts
         w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
         #print(w2cs.shape)
-        sim_cam_space_coords = transform_pointcloud_torch(ref_3d_coords, w2cs) # 32, N, 3
+        sim_cam_space_coords = transform_pointcloud_torch(ref_3d_coords[:,1:], w2cs) # 32, N, 3
         print(sim_cam_space_coords.shape)
         sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics) # 32, N, 3
         
@@ -503,7 +536,7 @@ class Dinov2Matcher:
         # sim_field N_model_pts, N_2d_pts
         # test_2d_coords N_2d_pts, 3
         # images B, 5, H, W
-        pt_id = 200
+        pt_id = 45
         sims = sim_field[:,pt_id] # shape N_model_pts
         w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
         #print(w2cs.shape)
@@ -512,14 +545,16 @@ class Dinov2Matcher:
         sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics)
         #print(sim_img_coords.shape)
         #print(sim_img_coords[:10])
+        coord = test_2d_coords[pt_id]
         for i in range(32):
             full_img = np.zeros((360,1280,3))
             test_img = images[0, :3].permute(1,2,0).cpu().numpy()
+            test_img[coord[1]-1:coord[1]+1, coord[2]-1:coord[2]+1] = np.array([0,0,255])
+            test_img = cv2.resize(test_img, (640,360), interpolation=cv2.INTER_LINEAR)
             H, W, C = test_img.shape
             full_img[:H, :W] = test_img
-            coord = test_2d_coords[pt_id]
             #print(coord)
-            full_img[coord[1]-1:coord[1]+1, coord[2]-1:coord[2]+1] = np.array([0,0,255])
+            #full_img[coord[1]-1:coord[1]+1, coord[2]-1:coord[2]+1] = np.array([0,0,255])
             heat_map = np.zeros((180,320,3))
             sim_coords = sim_img_coords[i].astype(int) # N, 2
             for j in range(sim_coords.shape[0]):

@@ -12,6 +12,11 @@ import _pickle as cPickle
 from tqdm import tqdm
 
 import torch
+from torch.masked import masked_tensor, as_masked_tensor
+import warnings
+
+# Disable prototype warnings and such
+warnings.filterwarnings(action='ignore', category=UserWarning)
 
 def setup_logger(logger_name, log_file, level=logging.INFO):
     logger = logging.getLogger(logger_name)
@@ -1013,3 +1018,45 @@ def create_3dmeshgrid(x, y, z, device):
     mesh_x, mesh_y, mesh_z = torch.meshgrid(x_, y_, z_, indexing="ij")
     meshgrid = torch.stack([mesh_x, mesh_y, mesh_z], axis = 3)
     return meshgrid
+
+def calc_masked_batch_var(cosine_sims, ref_masks):
+    # cosine sims shape N_pts, N_ref, feat_H, feat_W
+    N_pts, N_ref, feat_H, feat_W = cosine_sims.shape
+    cosine_sims = cosine_sims.reshape(N_pts, N_ref, feat_H*feat_W)
+    ref_masks = ref_masks.reshape(N_ref, feat_H*feat_W).unsqueeze(0)
+    #print((ref_masks>0).device, cosine_sims.device)
+    #print(torch.nan.device)
+    cosine_sims = torch.where(ref_masks>0, cosine_sims, torch.nan)
+    mean = torch.nanmean(cosine_sims, dim = 2).unsqueeze(2)
+    var = torch.sqrt(
+        torch.nanmean(
+            torch.pow( torch.abs(cosine_sims - mean), 2)
+        ))
+    
+    return var
+
+def calc_coords_3d_var(sims_and_coords, threshold):
+    # sims and coords N_2d_pts, N_3d_pts, 8
+    '''
+    mask = (sims_and_coords[:,:,0:1] > threshold).repeat(1, 1, 3)
+    #print(torch.sum(mask, dim=1)[:10])
+    target_coords = masked_tensor(sims_and_coords[:,:,5:], mask)
+    #print(target_coords.shape)
+    #print(torch.sum(target_coords, dim = 1)[:10])
+    vars = torch.var(target_coords, dim = 1)
+    #print(vars.shape)
+    #print(vars[:10])
+    vars = torch.sum(vars, dim = 1)
+    print(vars.shape)
+    return vars
+    '''
+    
+    mask = sims_and_coords[:,:,0:1] > threshold
+    target_coords = torch.where(mask, sims_and_coords, torch.nan)
+    mean = torch.nanmean(target_coords, dim = 1).unsqueeze(1)
+    vars = torch.nanmean(
+        torch.pow(target_coords - mean, 2), axis = 1
+    )
+    vars = torch.nansum(vars, axis = 1)
+    
+    return vars
