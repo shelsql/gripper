@@ -42,7 +42,7 @@ class Dinov2Matcher:
         ref_masks = torch.flip(ref_masks, dims = [2])
         
         flip_x = torch.tensor([[1,0,0,0],[0,-1,0,0],[0,0,1,0],[0,0,0,1]])
-        flip_x = flip_x.unsqueeze(0).repeat(32, 1, 1).float()
+        flip_x = flip_x.unsqueeze(0).repeat(64, 1, 1).float()
         c2ws = torch.bmm(c2ws, flip_x)
         
         #ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
@@ -447,11 +447,11 @@ class Dinov2Matcher:
     def vis_corr_map(self, cosine_sims, batch_feat_mask, cropped_rgbs):
         # cosine sims shape B, feat_H, feat_W, N_ref, feat_H, feat_W
         coords = [14, 5]
-        for i in range(32):
+        for i in range(64):
             corr_map = cosine_sims[0, coords[0], coords[1], i]
             corr_map[self.feat_masks[i,0]==0] = 0
             corr_map = corr_map.cpu().numpy()
-            corr_map = (corr_map - np.min(corr_map)) / (np.max(corr_map) - np.min(corr_map))
+            # corr_map = (corr_map - np.min(corr_map)) / (np.max(corr_map) - np.min(corr_map)) 不用相对值，方便不同图之间的比较
             corr_img = np.zeros((32, 32, 3))
             corr_img[:,:,2] = corr_map
             full_img = np.zeros((32, 64, 3))
@@ -477,7 +477,7 @@ class Dinov2Matcher:
         print(sim_cam_space_coords.shape)
         sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics) # 32, N, 3
         
-        for i in range(32):
+        for i in range(64):
             full_img = np.zeros((360,1280,3))
             test_img = images[0, :3].permute(1,2,0).cpu().numpy()
             H, W, C = test_img.shape
@@ -512,7 +512,7 @@ class Dinov2Matcher:
         sim_img_coords = project_points(sim_cam_space_coords, self.ref_intrinsics)
         #print(sim_img_coords.shape)
         #print(sim_img_coords[:10])
-        for i in range(32):
+        for i in range(64):
             full_img = np.zeros((360,1280,3))
             test_img = images[0, :3].permute(1,2,0).cpu().numpy()
             H, W, C = test_img.shape

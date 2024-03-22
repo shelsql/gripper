@@ -81,7 +81,7 @@ def main(
         dname='ty',
         exp_name='debug',
         B=1, # batchsize
-        S=32, # seqlen
+        S=64, # seqlen
         rand_frames=False,
         crop_size=(256,448),
         use_augs=False, # resizing/jittering/color/blur augs
@@ -112,7 +112,7 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
+    ref_dataset = ReferenceDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_lowres")
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
@@ -126,7 +126,7 @@ def main(
 
     global_step = 0
     
-    gripper_path = "./franka_hand_obj/franka_hand.obj"
+    gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
     gripper_pointcloud = sample_points_from_mesh(gripper_path, n_pts=8192)
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False)
