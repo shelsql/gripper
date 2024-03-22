@@ -471,7 +471,7 @@ class Dinov2Matcher:
         coord = test_2d_coords[pt_id]
         print("2D coords:", coord)
         sims = cosine_sims[pt_id] # shape N_3d_pts
-        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
+        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(64)], axis = 0)
         #print(w2cs.shape)
         sim_cam_space_coords = transform_pointcloud_torch(ref_3d_coords, w2cs) # 32, N, 3
         print(sim_cam_space_coords.shape)
@@ -505,7 +505,7 @@ class Dinov2Matcher:
         # images B, 5, H, W
         pt_id = 200
         sims = sim_field[:,pt_id] # shape N_model_pts
-        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(32)], axis = 0)
+        w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(64)], axis = 0)
         #print(w2cs.shape)
         sim_cam_space_coords = transform_pointcloud_torch(self.model_pc, w2cs) # 32, N, 3
         print(sim_cam_space_coords.shape)
