@@ -35,6 +35,7 @@ def run_model(d, refs, pointcloud, device, dname, sw=None):
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
     ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3)
     ref_c2ws = refs['c2ws']
+    ref_obj_poses = refs['obj_poses']
     ref_intrinsics = refs['intrinsics']
     #print(kptss)
     #print(npys)
@@ -69,11 +70,12 @@ def run_model(d, refs, pointcloud, device, dname, sw=None):
     rot90_mat = np.array([[0,1,0,0],[-1,0,0,0],[0,0,1,0],[0,0,0,1]])
     save_pointcloud(pointcloud, "pointclouds/gripper.txt")
     #print(ref_depths.shape)
-    for i in tqdm(range(32)):
+    for i in tqdm(range(64)):
         ref_pointcloud = depth_map_to_pointcloud(ref_depths[0,i,0], ref_masks[0,i,0], ref_intrinsics)
         save_pointcloud(ref_pointcloud , "pointclouds/ref_image_%.3d.txt" % i)
         
         transformed_ref = transform_pointcloud(ref_pointcloud, ref_c2ws[0,i])
+        transformed_ref = transform_pointcloud(transformed_ref, np.linalg.inv(ref_obj_poses[0,i]))
         save_pointcloud(transformed_ref , "pointclouds/transformed_ref_%.3d.txt" % i)
         #transformed_g = transform_pointcloud(pointcloud, np.dot(flip_mat, np.linalg.inv(ref_c2ws[0,26])))
         #save_pointcloud(transformed_g , "transformed_g.txt")
@@ -145,6 +147,7 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = TrackingDataset()
+    #vis_dataset = 
     ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
