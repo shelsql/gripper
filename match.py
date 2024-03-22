@@ -88,7 +88,7 @@ def main(
         dname='ty',
         exp_name='debug',
         B=1, # batchsize
-        S=32, # seqlen
+        S=64, # seqlen
         rand_frames=False,
         crop_size=(256,448),
         use_augs=False, # resizing/jittering/color/blur augs
@@ -136,6 +136,8 @@ def main(
     
     gripper_path = "./franka_hand_obj/franka_hand.obj"
     gripper_pointcloud = sample_points_from_mesh(gripper_path, fps=True, n_pts=8192)
+    gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
+    gripper_pointcloud = sample_points_from_mesh(gripper_path, n_pts=8192)
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False)
     

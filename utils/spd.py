@@ -989,7 +989,7 @@ def get_2dbboxes(masks):
                 
                 # Store bounding box coordinates
                 bboxes[b, s] = torch.tensor([ymin, xmin, ymax, xmax])
-    elif len(masks.shape) == 3:
+    elif len(masks.shape) == 3:     # make bbox square
         B, H, W = masks.shape
         # Initialize tensor to store bounding boxes
         bboxes = torch.zeros((B, 4))
@@ -1005,7 +1005,30 @@ def get_2dbboxes(masks):
             ymax = non_zero_coords[:, 0].max() + 1
             xmin = non_zero_coords[:, 1].min()
             xmax = non_zero_coords[:, 1].max() + 1
-            
+
+            w = xmax-xmin
+            h = ymax-ymin
+            if h > w:
+                dif = h-w
+                xmin = xmin-dif//2
+                xmax = xmax+dif//2
+                if xmin < 0:
+                    xmax = xmax - xmin
+                    xmin = 0
+                if xmax > W:
+                    xmin = xmin-xmax+W
+                    xmax = W
+            elif w>h :
+                dif = w-h
+                ymin = ymin-dif/2
+                ymax = ymax+dif/2
+                if ymin < 0:
+                    ymax = ymax - ymin
+                    ymin = 0
+                if ymax > H:
+                    ymin = ymin-ymax+H
+                    ymax = H
+
             # Store bounding box coordinates
             bboxes[b] = torch.tensor([ymin, xmin, ymax, xmax])
     
