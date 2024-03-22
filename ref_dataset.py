@@ -16,7 +16,7 @@ class ReferenceDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/rendered_franka",
                  use_augs=False,
-                 num_views=32,
+                 num_views=64,
                  strides=[1,2]
                  ):
         super().__init__()
