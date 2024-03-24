@@ -258,7 +258,7 @@ class Dinov2Matcher:
         
         #print(sims_and_coords.shape)
         target_point_vars = calc_coords_3d_var(sims_and_coords, self.threshold)
-        var_threshold = 0.01
+        var_threshold = 500
         
         print(target_point_vars.shape)
         #print(target_point_vars.max(), target_point_vars.min(), target_point_vars.mean())
@@ -281,12 +281,14 @@ class Dinov2Matcher:
         #print(cosine_sims.shape, ref_3d_coords.shape, sim_field.shape)
         #print(cosine_sims.max(), cosine_sims.min(), sim_field.max(), sim_field.min())
         #threshold = sim_field.max() * 0.8
+        print(cosine_sims.shape)
         max_sims, max_idxs = torch.max(cosine_sims, axis = 1) # max_idxs shape N_2d_pts
-        max_idxs = max_idxs[target_point_vars < 1]
+        max_idxs = max_idxs[target_point_vars < var_threshold]
+        print(max_idxs.shape)
         matches = torch.zeros((max_idxs.shape[0],6), device = self.device)
         matches[:,3:] = ref_3d_coords[max_idxs, 1:]
         #print(test_2d_coords.shape, (max_sims>threshold).shape)
-        matches[:,:3] = test_2d_coords[target_point_vars < 1]
+        matches[:,:3] = test_2d_coords[target_point_vars < var_threshold]
         #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
         #print(matches[:10])
         self.vis_3d_matches(images, matches)
