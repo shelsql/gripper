@@ -31,6 +31,8 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
     #kptss = d['kpts']
     #npys = d['npy']
+    c2ws = d['c2w'] # B, 4, 4
+    o2ws = d['obj_pose'] # B, 4, 4
     intrinsics = d['intrinsics']
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).to(device) # B, S, C, H, W
@@ -67,6 +69,14 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     test_camera_K[0,2] = intrinsics['cx']
     test_camera_K[1,2] = intrinsics['cy']
     test_camera_K[2,2] = 1
+    
+    gt_pose = torch.matmul(torch.linalg.inv(o2ws[0]), c2ws[0])
+    print("gt_obj_to_cam:", gt_pose)
+    print("gt_obj_to_cam_inv", torch.linalg.inv(gt_pose))
+    
+    #TODO cluster debug pose and PnP
+    
+    print()
 
     for i in range(rgbs.shape[0]):
         matches = matches_3d[matches_3d[:,0] == i]
@@ -97,7 +107,7 @@ def main(
         log_dir='./logs_match',
         max_iters=1,
         log_freq=1,
-        device_ids=[0],
+        device_ids=[1],
 ):
     device = 'cuda:%d' % device_ids[0]
     
@@ -137,7 +147,7 @@ def main(
     gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
     gripper_pointcloud = sample_points_from_mesh(gripper_path, fps = True, n_pts=8192)
     
-    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False)
+    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False, device=device)
     
 
     while global_step < max_iters:
