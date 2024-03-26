@@ -185,10 +185,11 @@ def solve_pnp_ransac(
             reprojectionError=inlier_thresh_px,
             flags=method,
         )
-        print("cv2 solve results:")
-        print("pnp_retval", pnp_retval)
-        print("rvec", rvec)
-        print("tvec", tvec)
+        #print("cv2 solve results:")
+        #print("pnp_retval", pnp_retval)
+        #print("rvec", rvec)
+        #print("tvec", tvec)
+        #print("inliers", inliers.shape)
 
         translation = tvec[:, 0]
         quaternion = (convert_rvec_to_quaternion(rvec[:, 0]).xyzw)
@@ -201,6 +202,7 @@ def solve_pnp_ransac(
         pnp_retval = False
         translation = None
         quaternion = None
+        rt_matrix = None
         inliers = None
 
     return pnp_retval, translation, rt_matrix#, inliers

@@ -867,6 +867,8 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     
     return pointcloud
 
+    
+
 def image_coords_to_camera_space(depth_map, coords_2d, intrinsics):
     
     # Unpack intrinsic matrix
@@ -875,8 +877,14 @@ def image_coords_to_camera_space(depth_map, coords_2d, intrinsics):
     cx = intrinsics['cx'].item()
     cy = intrinsics['cy'].item()
     
-    depths = depth_map[coords_2d]
-    pass
+    #print(coords_2d.shape, coords_2d, np.max(coords_2d[:,0]), np.max(coords_2d[:,1]))
+    depths = depth_map[coords_2d[:,0], coords_2d[:,1]]
+    x = (coords_2d[:,1] - cx) * depths / fx
+    y = (coords_2d[:,0] - cy) * depths / fy
+    z = depths
+    
+    pointcloud = np.stack((x, y, z), axis=-1)
+    return pointcloud
 
 def save_pointcloud(pointcloud, filename):
     """

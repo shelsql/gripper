@@ -16,14 +16,17 @@ from ref_dataset import ReferenceDataset, SimTestDataset
 from torch.utils.data import DataLoader
 from matcher import Dinov2Matcher
 
-from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, save_pointcloud, transform_pointcloud, get_2dbboxes
-from utils.geometric_vision import solve_pnp_ransac
+from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud
+from utils.spd import save_pointcloud, transform_pointcloud, get_2dbboxes
+from utils.spd import image_coords_to_camera_space
+from utils.geometric_vision import solve_pnp_ransac, solve_pnp
+import cv2
 
 random.seed(125)
 np.random.seed(125)
 torch.manual_seed(125)
 
-def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
+def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
     
     rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
@@ -69,22 +72,43 @@ def run_model(d, refs, pointcloud, matcher, device, dname, sw=None):
     test_camera_K[0,2] = intrinsics['cx']
     test_camera_K[1,2] = intrinsics['cy']
     test_camera_K[2,2] = 1
+    print(test_camera_K)
     
-    gt_pose = torch.matmul(torch.linalg.inv(o2ws[0]), c2ws[0])
-    print("gt_obj_to_cam:", gt_pose)
-    print("gt_obj_to_cam_inv", torch.linalg.inv(gt_pose))
+    gt_pose = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
+    #print("o2w:", o2ws[0])
+    #print("c2w:", c2ws[0])
+    print("gt_cam_to_obj:", gt_pose)
+    #print("gt_cam_to_obj_inv", np.linalg.inv(gt_pose))
+    
+    #test_pc = depth_map_to_pointcloud(depths[0,0], ref_masks[0,0], intrinsics)
     
     #TODO cluster debug pose and PnP
-    
-    print()
 
     for i in range(rgbs.shape[0]):
+        #valid_pts_2d = torch.nonzero(masks[i,0] == 1)
+        #print(valid_pts_2d.shape, valid_pts_2d)
+        #exit()
+        #pts_2d = valid_pts_2d[::50].cpu().numpy()
+        #pts_3d = image_coords_to_camera_space(depths[0,0].cpu().numpy(), pts_2d, intrinsics)
+        #pts_3d = transform_pointcloud(pts_3d, gt_pose)
+        #print(pts_2d)
+        #print(pts_3d)
+        #marked_rgb = rgbs[0].permute(1,2,0).cpu().numpy()
+        #marked_rgb[pts_2d[:10,0], pts_2d[:10,1]] = np.array([0,0,255])
+        #cv2.imwrite("./match_vis/marked_2d_pts.png",marked_rgb)
+        #save_pointcloud(pts_3d[:10], "./pointclouds/selected_pts.txt")
         matches = matches_3d[matches_3d[:,0] == i]
+        #matches[:,1], matches[:,2] = matches[:,2], matches[:,1]
         pnp_retval, translation, rt_matrix = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
-        print(pnp_retval)
-        print(translation)
-        print("rt_matrix", rt_matrix)
+        #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
+        
+        #print(pnp_retval)
+        #print(translation)
+        #print("rt_matrix", rt_matrix)
         print("rt_matrix_inv", np.linalg.inv(rt_matrix))
+        test_pointcloud = depth_map_to_pointcloud(depths[0,0], masks[0,0], intrinsics)
+        test_pointcloud = transform_pointcloud(test_pointcloud, np.linalg.inv(rt_matrix))
+        save_pointcloud(test_pointcloud, "./pointclouds/test_result_%.2d.txt" % step)
         #print("gripper_rt", gripper_rt)
     
     scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics)
@@ -105,7 +129,7 @@ def main(
         shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        max_iters=1,
+        max_iters=10,
         log_freq=1,
         device_ids=[1],
 ):
@@ -174,7 +198,7 @@ def main(
         #     print("got the sample", torch.sum(sample['vis_g']))
         
         if sample is not None:
-            _ = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, sw=sw_t)
+            _ = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
         else:
             print('sampling failed')
                   
