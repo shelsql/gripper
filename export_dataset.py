@@ -13,9 +13,15 @@ from matcher import Dinov2Matcher
 from utils.spd import get_2dbboxes
 import torch.nn.functional as F
 
+import hickle as hkl
+
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
 dataset_location = "./render_64views"
+export_dir = "./export_ref_840"
+if not os.path.exists(export_dir):
+    os.makedirs(export_dir)
+
 rgb_paths = glob.glob(dataset_location + "/*png")
 camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
 
@@ -66,7 +72,7 @@ w2os = torch.tensor(obj_poses).float()
 cam_to_obj = torch.bmm(w2os, c2ws) # N, 4, 4
 
 N, C, H, W = rgbs.shape
-device = "cuda:0"
+device = "cuda:2"
 img_size = 448
 
 print(cam_to_obj.shape)
@@ -130,25 +136,29 @@ dinov2.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.
 dinov2.to(device)
 dinov2.eval()
 
+batch_size = 128
+num_batches = (N + batch_size - 1) // batch_size
+all_tokens = torch.zeros((N, 1024, 32, 32), device = device)
+
 with torch.inference_mode():
-    image_batch = cropped_rgbs
-    tokens = dinov2.get_intermediate_layers(image_batch)[0]
-    B, N_tokens, C = tokens.shape
-    assert(N_tokens == img_size*img_size / 196)
-    tokens = tokens.permute(0,2,1).reshape(B, C, img_size//14, img_size//14)
+    for i in tqdm(range(num_batches)):
+        start_idx = i*batch_size
+        end_idx = min(N, (i+1)*batch_size)
+        image_batch = cropped_rgbs[start_idx:end_idx]
+        tokens = dinov2.get_intermediate_layers(image_batch)[0]
+        B, N_tokens, C = tokens.shape
+        assert(N_tokens == img_size*img_size / 196)
+        tokens = tokens.permute(0,2,1).reshape(B, C, img_size//14, img_size//14)
+        all_tokens[start_idx:end_idx] = tokens
     #print(tokens.shape)
     #print(tokens.max(), tokens.min(), tokens.mean())
     
-print(tokens.shape)
+print(all_tokens.shape)
+print("Saving features...")
+for i in tqdm(range(N)):
+    path = rgb_paths[i][:-8]
+    feat_path = path + "_feats.npy"
+    np.save(feat_path, all_tokens[i].cpu().numpy())
 
-data_dict = {
-    "rgbs": rgbs,
-    "depths": depths,
-    "masks": masks,
-    "cam_to_obj": cam_to_obj,
-    "bboxes": bboxes,
-    "features": tokens,
-    "intrinsics": camera_intrinsic
-}
-
-torch.save(data_dict, "./dataset_exports/ref_64.pth")
+#torch.save(data_dict, "./dataset_exports/ref_840.pth")
+#hkl.dump(data_dict, "./dataset_exports/ref_64.hkl")
