@@ -33,7 +33,7 @@ class Dinov2Matcher:
         self.upscale_ratio = upscale_ratio
         self.device = device
         self.patch_size = 14
-        
+
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).squeeze()
         ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).squeeze()
@@ -67,13 +67,13 @@ class Dinov2Matcher:
             self.model.to(self.device)
             self.model.eval()
             #print("Calculating reference view features...")
-            
+
             #print(cropped_ref_rgbs.shape)
             self.ref_features = self.extract_features(cropped_ref_rgbs)
         else:
             self.ref_features = torch.tensor(refs['feats'])[0].float().to(device)
         print("Reference view features obtained")
-            
+
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         self.N_refs = N_refs
         assert(feat_H == feat_W)
@@ -86,8 +86,9 @@ class Dinov2Matcher:
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
-        #self.centers, self.ref_bags = self.gen_refs_bags()
-
+        # self.centers, self.ref_bags = self.gen_and_save_refs_bags()
+        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/render_lowres/vision_word_list.npy') # 2048x1024
+        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/render_lowres/ref_bags.npy')
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
@@ -202,11 +203,11 @@ class Dinov2Matcher:
         return normalized_tokens
     
     def match_and_fuse(self, sample):
-        
+
         rgbs = torch.Tensor(sample['rgb']).float().permute(0, 3, 1, 2).to(self.device) # B, C, H, W
         depths = torch.Tensor(sample['depth']).float().permute(0, 3, 1, 2).to(self.device)
         masks = torch.Tensor(sample['mask']).float().permute(0, 3, 1, 2).to(self.device)
-        images = torch.concat([rgbs, depths, masks], axis = 1)
+        images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         B, C, H, W = rgbs.shape
         assert(feat_H == feat_W)
@@ -238,11 +239,11 @@ class Dinov2Matcher:
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
 
-        #selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
+        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
 
-        #select_mask = torch.zeros_like(self.feat_masks,device=self.device)
-        #select_mask[selected_refs] = 1
-        #self.feat_masks = self.feat_masks * select_mask
+        select_mask = torch.zeros_like(self.feat_masks,device=self.device)
+        select_mask[selected_refs] = 1
+        self.feat_masks = self.feat_masks * select_mask
 
         cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
@@ -636,7 +637,7 @@ class Dinov2Matcher:
             rgb *= 255
             cv2.imwrite("./match_vis/cropped_rgb_%.2d.png" % i, rgb)
 
-    def gen_refs_bags(self):
+    def gen_and_save_refs_bags(self):
         N_refs,feat_C,feat_H,feat_W = self.ref_features.shape
         ref_features = self.ref_features.permute(0,2,3,1)       # nref,32,32,1024
         ref_features = ref_features[self.feat_masks[:,0]>0]     # n_ref_pts(26326),1024
@@ -658,15 +659,17 @@ class Dinov2Matcher:
             for j in range(3):
                 indice = sorted_indices[i,j]
                 dis = torch.exp(-(sorted_dis[i,j]**2)/200)
-
                 ref_bags[ref_img_ids[i],indice] += dis
 
+        ref_bags = np.array(ref_bags.cpu())
+        np.save('ref_bags.npy',ref_bags)
+        np.save('vision_word_list.npy',centers)
         return centers, ref_bags
 
     def select_refs(self,features,batch_feat_mask,b,test_idxs):
         # B*N,C
         features = features.reshape(b,32,32,-1)[batch_feat_mask[:,0]>0] # n_test_2d_pts(381), C
-        descriptors_centers_dis = pairwise_euclidean_distance(features, torch.tensor(self.centers, device=self.device)) # 381，2048
+        descriptors_centers_dis = pairwise_euclidean_distance(features, torch.tensor(self.vision_word_list, device=self.device)) # 381，2048
         sorted_dis, sorted_indices = torch.sort(descriptors_centers_dis, dim=1)
         test_bags = torch.zeros(b,2048).to(self.device)
         n_test_pts = features.shape[0]
@@ -679,6 +682,6 @@ class Dinov2Matcher:
                 dis = torch.exp(-(sorted_dis[i,j]**2)/200)
                 test_bags[test_img_ids[i],indice] += dis
 
-        bag_cos_sim = pairwise_cosine_similarity(test_bags,self.ref_bags)   # b,v
+        bag_cos_sim = pairwise_cosine_similarity(test_bags,torch.tensor(self.ref_bags,device=self.device))   # b,v
         _,sorted_view_indices = torch.sort(bag_cos_sim,dim=1,descending=True)
         return sorted_view_indices[:,:10]
