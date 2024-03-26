@@ -11,12 +11,12 @@ import math
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
-from utils.spd import calc_masked_batch_var, calc_coords_3d_var
+# from utils.spd import calc_masked_batch_var, calc_coords_3d_var
 
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
-
+from sklearn.cluster import KMeans
 class Dinov2Matcher:
     def __init__(self, refs, model_pointcloud,
                  repo_name="facebookresearch/dinov2",
@@ -84,6 +84,8 @@ class Dinov2Matcher:
         #self.vis_rgbs(cropped_ref_rgbs)
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
+
+        self.centers, self.ref_bags = self.gen_refs_bags()
 
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
@@ -225,13 +227,23 @@ class Dinov2Matcher:
         #TODO calculate vars
         #cosine_sims_vars = calc_masked_batch_var(cosine_sims, self.feat_masks, self.device)
         #print(cosine_sims_vars.shape)
-        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
+
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
-        ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
+
+        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
+
+        select_mask = torch.zeros_like(self.feat_masks,device=self.device)
+        select_mask[selected_refs] = 1
+        self.feat_masks = self.feat_masks * select_mask
+
+        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
+        ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
         ref_idxs = ref_idxs[self.feat_masks[:,0] > 0] # N_ref_pts, 3
         #good_refs = good_refs[batch_feat_masks[:,0] > 0] # N_batch_pts, N_ref
-        
+
+
+
         test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
         ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
         ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2os)
@@ -616,3 +628,50 @@ class Dinov2Matcher:
             rgb = (rgb - np.min(rgb)) / (np.max(rgb) - np.min(rgb))
             rgb *= 255
             cv2.imwrite("./match_vis/cropped_rgb_%.2d.png" % i, rgb)
+
+    def gen_refs_bags(self):
+        N_refs,feat_C,feat_H,feat_W = self.ref_features.shape
+        ref_features = self.ref_features.permute(0,2,3,1)       # nref,32,32,1024
+        ref_features = ref_features[self.feat_masks[:,0]>0]     # n_ref_pts(26326),1024
+
+        ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W,self.device)
+        ref_idxs = ref_idxs[self.feat_masks[:,0]>0]     # 26326,3
+        ref_img_ids = ref_idxs[:,0]                     # 26326
+        n_ref_pts = ref_img_ids.shape[0]
+
+        kmeans = KMeans(n_clusters=2048).fit(ref_features.cpu())
+
+        centers = kmeans.cluster_centers_   # 2048,1024
+
+        descriptors_centers_dis = pairwise_euclidean_distance(ref_features, torch.tensor(centers,device=self.device))# 26326,2048
+        sorted_dis,sorted_indices = torch.sort(descriptors_centers_dis, dim=1)# both 26326,2048
+        ref_bags = torch.zeros(N_refs,2048).to(self.device)     # 64,2048
+
+        for i in range(n_ref_pts):  # TODO how to not use forloop
+            for j in range(3):
+                indice = sorted_indices[i,j]
+                dis = torch.exp(-(sorted_dis[i,j]**2)/200)
+
+                ref_bags[ref_img_ids[i],indice] += dis
+
+        return centers, ref_bags
+
+    def select_refs(self,features,batch_feat_mask,b,test_idxs):
+        # B*N,C
+        features = features.reshape(b,32,32,-1)[batch_feat_mask[:,0]>0] # n_test_2d_pts(381), C
+        descriptors_centers_dis = pairwise_euclidean_distance(features, torch.tensor(self.centers, device=self.device)) # 381，2048
+        sorted_dis, sorted_indices = torch.sort(descriptors_centers_dis, dim=1)
+        test_bags = torch.zeros(b,2048).to(self.device)
+        n_test_pts = features.shape[0]
+
+        test_img_ids = test_idxs[:,0]
+
+        for i in range(n_test_pts):
+            for j in range(3):
+                indice = sorted_indices[i,j]
+                dis = torch.exp(-(sorted_dis[i,j]**2)/200)
+                test_bags[test_img_ids[i],indice] += dis
+
+        bag_cos_sim = pairwise_cosine_similarity(test_bags,self.ref_bags)   # b,v
+        _,sorted_view_indices = torch.sort(bag_cos_sim,dim=1,descending=True)
+        return sorted_view_indices[:,:10]
