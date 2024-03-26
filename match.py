@@ -60,7 +60,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     print(rgbs.shape, depths.shape, masks.shape)
     #masks = (masks >= 9).float()
     images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
-    matches_3d = matcher.match_and_fuse(images)  # N, 6
+    matches_3d = matcher.match_and_fuse(d)  # N, 6
 
     test_camera_K = np.zeros((3,3))
     #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
@@ -72,7 +72,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     test_camera_K[0,2] = intrinsics['cx']
     test_camera_K[1,2] = intrinsics['cy']
     test_camera_K[2,2] = 1
-    print(test_camera_K)
+    #print(test_camera_K)
     
     gt_pose = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
     #print("o2w:", o2ws[0])
@@ -98,7 +98,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         #cv2.imwrite("./match_vis/marked_2d_pts.png",marked_rgb)
         #save_pointcloud(pts_3d[:10], "./pointclouds/selected_pts.txt")
         matches = matches_3d[matches_3d[:,0] == i]
-        #matches[:,1], matches[:,2] = matches[:,2], matches[:,1]
+        matches[:,1], matches[:,2] = matches[:,2], matches[:,1]
         pnp_retval, translation, rt_matrix = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
         
@@ -153,8 +153,8 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    vis_dataset = SimTestDataset()
-    ref_dataset = ReferenceDataset(dataset_location="./render_lowres", num_views=64)
+    vis_dataset = SimTestDataset(features=True)
+    ref_dataset = ReferenceDataset(dataset_location="./render_64views", num_views=840, features=True)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
@@ -171,7 +171,7 @@ def main(
     gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
     gripper_pointcloud = sample_points_from_mesh(gripper_path, fps = True, n_pts=8192)
     
-    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, half_precision=False, device=device)
+    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
 
     while global_step < max_iters:

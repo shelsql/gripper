@@ -22,17 +22,17 @@ class Dinov2Matcher:
                  repo_name="facebookresearch/dinov2",
                  model_name="dinov2_vitl14_reg",
                  size=448,
-                 half_precision=False,
                  threshold=0.7,
                  upscale_ratio=1,
                  device="cuda:0"):
+        print("Initializing DinoV2 Matcher...")
         self.repo_name = repo_name
         self.model_name = model_name
         self.size = size
-        self.half_precision = half_precision
         self.threshold = threshold
         self.upscale_ratio = upscale_ratio
         self.device = device
+        self.patch_size = 14
         
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).squeeze()
@@ -56,36 +56,37 @@ class Dinov2Matcher:
         self.ref_images = ref_images
         self.ref_intrinsics = refs['intrinsics']
 
-        if self.half_precision:
-            self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
-            self.model.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.pth'))
-        else:
-            self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
-            self.model.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.pth'))
-
-        self.model.to(self.device)
-        self.model.eval()
-
         self.transform = transforms.Compose([
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
-        
-        print("Calculating reference view features...")
-        
+        print("Preprocessing reference views...")
         cropped_ref_rgbs, cropped_ref_masks, ref_bboxes = self.prepare_images(ref_images)
-        #print(cropped_ref_rgbs.shape)
-        self.ref_features = self.extract_features(cropped_ref_rgbs)
+        if refs['feats'] is None:
+            self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
+            self.model.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.pth'))
+            self.model.to(self.device)
+            self.model.eval()
+            #print("Calculating reference view features...")
+            
+            #print(cropped_ref_rgbs.shape)
+            self.ref_features = self.extract_features(cropped_ref_rgbs)
+        else:
+            self.ref_features = torch.tensor(refs['feats'])[0].float().to(device)
+        print("Reference view features obtained")
+            
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         self.N_refs = N_refs
         assert(feat_H == feat_W)
         feat_size = feat_H
         self.feat_masks = F.interpolate(cropped_ref_masks, size = (feat_size, feat_size), mode = "nearest") # Nref, 1, 32, 32
         self.ref_bboxes = ref_bboxes
+
+        print("DinoV2 Matcher done initialized")
         #self.vis_rgbs(cropped_ref_rgbs)
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
-        self.centers, self.ref_bags = self.gen_refs_bags()
+        #self.centers, self.ref_bags = self.gen_refs_bags()
 
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
@@ -113,10 +114,7 @@ class Dinov2Matcher:
         # images: B, C, H, W  torch.tensor
         #print(images.max(), images.min(), images.mean())
         with torch.inference_mode():
-            if self.half_precision:
-                image_batch = images.half().to(self.device)
-            else:
-                image_batch = images.to(self.device)
+            image_batch = images.to(self.device)
 
             tokens = self.model.get_intermediate_layers(image_batch)[0]
             B, N_tokens, C = tokens.shape
@@ -137,10 +135,10 @@ class Dinov2Matcher:
         test_bboxes = test_bboxes[idxs[:,0]] # N, 4
         ref_bboxes = self.ref_bboxes[idxs[:,2]]
         # Turn token idx into coord within 448*448 box
-        coords[:,1] = (((idxs[:,1] // feat_size) * self.model.patch_size) + self.model.patch_size / 2) # Coord within 448*448 box
-        coords[:,2] = (((idxs[:,1] % feat_size) * self.model.patch_size) + self.model.patch_size / 2) # Coord within 448*448 box
-        coords[:,4] = (((idxs[:,3] // feat_size) * self.model.patch_size) + self.model.patch_size / 2) # Coord within 448*448 box
-        coords[:,5] = (((idxs[:,3] % feat_size) * self.model.patch_size) + self.model.patch_size / 2) # Coord within 448*448 box
+        coords[:,1] = (((idxs[:,1] // feat_size) * self.patch_size) + self.patch_size / 2) # Coord within 448*448 box
+        coords[:,2] = (((idxs[:,1] % feat_size) * self.patch_size) + self.patch_size / 2) # Coord within 448*448 box
+        coords[:,4] = (((idxs[:,3] // feat_size) * self.patch_size) + self.patch_size / 2) # Coord within 448*448 box
+        coords[:,5] = (((idxs[:,3] % feat_size) * self.patch_size) + self.patch_size / 2) # Coord within 448*448 box
         # Turn coord within 448*448 box to coord on full image
         coords[:,1] = (coords[:,1] / 448.0 * (test_bboxes[:,2] - test_bboxes[:,0])) + test_bboxes[:,0]
         coords[:,2] = (coords[:,2] / 448.0 * (test_bboxes[:,3] - test_bboxes[:,1])) + test_bboxes[:,1]
@@ -156,7 +154,7 @@ class Dinov2Matcher:
         coords[:,0] = idxs[:,0]
         batch_bboxes = bboxes[idxs[:,0]]
         # Turn token idx into coord within 448*448 box
-        coords[:,1:3] = idxs[:,1:3] * self.model.patch_size + self.model.patch_size / 2
+        coords[:,1:3] = idxs[:,1:3] * self.patch_size + self.patch_size / 2
         # Turn coord within 448*448 box to coord on full image
         coords[:,1:3] = (coords[:,1:3] / 448.0 * (batch_bboxes[:,2:4] - batch_bboxes[:,0:2])) + batch_bboxes[:,0:2]
         return coords
@@ -202,14 +200,22 @@ class Dinov2Matcher:
         normalized_tokens = (reduced_tokens-np.min(reduced_tokens))/(np.max(reduced_tokens)-np.min(reduced_tokens))
         return normalized_tokens
     
-    def match_and_fuse(self, images):
-        B, C, H, W = images.shape
+    def match_and_fuse(self, sample):
+        
+        rgbs = torch.Tensor(sample['rgb']).float().permute(0, 3, 1, 2).to(self.device) # B, C, H, W
+        depths = torch.Tensor(sample['depth']).float().permute(0, 3, 1, 2).to(self.device)
+        masks = torch.Tensor(sample['mask']).float().permute(0, 3, 1, 2).to(self.device)
+        images = torch.concat([rgbs, depths, masks], axis = 1)
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
+        B, C, H, W = rgbs.shape
         assert(feat_H == feat_W)
         feat_size = feat_H
         #print(images[:,4:5].sum())
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
-        features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
+        if sample['feat'] is None:
+            features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
+        else:
+            features = torch.tensor(sample['feat']).float().to(self.device)
         N_tokens = feat_H * feat_W
         #print(features.shape)
         features = features.permute(0, 2, 3, 1).reshape(-1, feat_C) # B*N, C
@@ -231,11 +237,11 @@ class Dinov2Matcher:
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
 
-        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
+        #selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
 
-        select_mask = torch.zeros_like(self.feat_masks,device=self.device)
-        select_mask[selected_refs] = 1
-        self.feat_masks = self.feat_masks * select_mask
+        #select_mask = torch.zeros_like(self.feat_masks,device=self.device)
+        #select_mask[selected_refs] = 1
+        #self.feat_masks = self.feat_masks * select_mask
 
         cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)

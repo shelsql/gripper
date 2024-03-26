@@ -17,11 +17,13 @@ class ReferenceDataset(Dataset):
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/rendered_franka",
                  use_augs=False,
                  num_views=64,
-                 strides=[1,2]
+                 strides=[1,2],
+                 features=False
                  ):
         super().__init__()
         print("Loading reference view dataset...")
         self.N = num_views
+        self.features = features
         self.dataset_location = dataset_location
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
@@ -35,6 +37,8 @@ class ReferenceDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
+        if self.features:
+            feats = []
         
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
         
@@ -46,6 +50,7 @@ class ReferenceDataset(Dataset):
             mask_path = path + "_id1.exr"
             c2w_path = path + "_c2w.npy"
             obj_pose_path = path + "_objpose.npy"
+            feat_path = path + "_feats.npy"
             
             #print(rgb_path)
             rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
@@ -53,6 +58,9 @@ class ReferenceDataset(Dataset):
             mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
+            if self.features:
+                feat = np.load(feat_path)
+                feats.append(feat)
             
             rgbs.append(rgb)
             depths.append(depth)
@@ -64,13 +72,18 @@ class ReferenceDataset(Dataset):
         masks = np.stack(masks, axis = 0)
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
-        print(depths.shape)
+        if self.features:
+            feats = np.stack(feats, axis = 0)
+        else:
+            feats = None
+        #print(depths.shape)
         sample = {
             "rgbs": rgbs,
             "depths": depths,
             "masks": masks,
             "c2ws": c2ws,
             "obj_poses": obj_poses,
+            "feats": feats,
             "intrinsics": camera_intrinsic
         }
         
@@ -83,10 +96,12 @@ class SimTestDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_random",
                  use_augs=False,
+                 features=False
                  ):
         super().__init__()
         print("Loading reference view dataset...")
         self.dataset_location = dataset_location
+        self.features = features
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
         print("Found %d views in %s" % (len(self.rgb_paths), self.dataset_location))
@@ -103,6 +118,7 @@ class SimTestDataset(Dataset):
         mask_path = path + "_id1.exr"
         c2w_path = path + "_c2w.npy"
         obj_pose_path = path + "_objpose.npy"
+        feat_path = path + "_feats.npy"
         
         #print(rgb_path)
         rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
@@ -110,6 +126,8 @@ class SimTestDataset(Dataset):
         mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
         c2w = np.load(c2w_path)
         obj_pose = np.load(obj_pose_path)
+        if self.features:
+            feat = np.load(feat_path)
             
         #print(depths.shape)
         sample = {
@@ -118,6 +136,7 @@ class SimTestDataset(Dataset):
             "mask": mask,
             "c2w": c2w,
             "obj_pose": obj_pose,
+            "feat": feat,
             "intrinsics": camera_intrinsic
         }
         
