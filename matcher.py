@@ -288,24 +288,46 @@ class Dinov2Matcher:
         #threshold = sim_field.max() * 0.8
         
         ##### DBSCAN clustering
-        good_pairs = cosine_sims > self.threshold # Bool N_2d_pts, N_3d_pts
-        dbscan = DBSCAN(eps = 0.001, min_samples=5)
+        matches = []
+        noise_threshold = 0.15
+        # Choose by threshold
+        # good_idxs = cosine_sims > self.threshold # Bool N_2d_pts, N_3d_pts
+        # Choose top N
+        top_N = 50
+        _, sorted_idxs = torch.sort(cosine_sims, descending=True, dim = 1)
+        good_idxs = sorted_idxs[:, :top_N]
+        dbscan = DBSCAN(eps = 0.008, min_samples=5)
         for idx_2d in range(cosine_sims.shape[0]):
-            good_coords_3d = ref_3d_coords[good_pairs[idx_2d]].cpu().numpy() # N,3 numpy
+            good_coords_3d = ref_3d_coords[good_idxs[idx_2d], 1:].cpu().numpy() # N,3 numpy
             labels = dbscan.fit(good_coords_3d).labels_
+            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+            n_noise = list(labels).count(-1)
+            n_total = labels.shape[0]
+            noise_ratio = n_noise / n_total
+            #print(noise_ratio)
+            if noise_ratio > noise_threshold:
+                continue
+            for i in range(n_clusters):
+                cluster_center = torch.tensor(np.mean(good_coords_3d[labels == i], axis = 0), device = self.device) # 3
+                pt_2d = test_2d_coords[idx_2d]
+                match = torch.concat([pt_2d, cluster_center], dim = 0)
+                #print(match.shape)
+                matches.append(match)
+            
+        matches = torch.stack(matches, dim = 0)
+        print(matches.shape)
         
-        
-        print(cosine_sims.shape)
-        max_sims, max_idxs = torch.max(cosine_sims, axis = 1) # max_idxs shape N_2d_pts
+        #print(cosine_sims.shape)
+        #max_sims, max_idxs = torch.max(cosine_sims, axis = 1) # max_idxs shape N_2d_pts
         #max_idxs = max_idxs[target_point_vars < var_threshold]
-        print(max_idxs.shape)
-        matches = torch.zeros((max_idxs.shape[0],6), device = self.device)
-        matches[:,3:] = ref_3d_coords[max_idxs, 1:]
+        #print(max_idxs.shape)
+        #matches = torch.zeros((max_idxs.shape[0],6), device = self.device)
+        #matches[:,3:] = ref_3d_coords[max_idxs, 1:]
         #print(test_2d_coords.shape, (max_sims>threshold).shape)
         #matches[:,:3] = test_2d_coords[target_point_vars < var_threshold]
         #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
         #print(matches[:10])
-        self.vis_3d_matches(images, matches)
+        #self.vis_3d_matches(images, matches)
         return matches
         
     def match_batch(self, images):

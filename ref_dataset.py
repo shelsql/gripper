@@ -102,7 +102,7 @@ class SimTestDataset(Dataset):
         depth_path = path + "_depth1.exr"
         mask_path = path + "_id1.exr"
         c2w_path = path + "_c2w.npy"
-        obj_pose_path = path + "_c2w.npy"
+        obj_pose_path = path + "_objpose.npy"
         
         #print(rgb_path)
         rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)

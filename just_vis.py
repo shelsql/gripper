@@ -76,6 +76,7 @@ def run_model(d, refs, pointcloud, device, dname, sw=None):
         
         transformed_ref = transform_pointcloud(ref_pointcloud, ref_c2ws[0,i])
         transformed_ref = transform_pointcloud(transformed_ref, np.linalg.inv(ref_obj_poses[0,i]))
+        print(np.dot(np.linalg.inv(ref_obj_poses[0,i]), ref_c2ws[0,i]))
         save_pointcloud(transformed_ref , "pointclouds/transformed_ref_%.3d.txt" % i)
         #transformed_g = transform_pointcloud(pointcloud, np.dot(flip_mat, np.linalg.inv(ref_c2ws[0,26])))
         #save_pointcloud(transformed_g , "transformed_g.txt")
@@ -148,7 +149,7 @@ def main(
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = TrackingDataset()
     #vis_dataset = 
-    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
+    ref_dataset = ReferenceDataset(dataset_location="./render_random")
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
