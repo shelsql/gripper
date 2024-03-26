@@ -99,6 +99,7 @@ class Dinov2Matcher:
         cropped_masks = torch.zeros((B, 1, self.size, self.size), device = self.device)
         for b in range(B):
             y_min, x_min, y_max, x_max = bboxes[b,0], bboxes[b,1], bboxes[b,2], bboxes[b,3]
+            
             cropped_rgb = rgbs[b:b+1, :, y_min:y_max, x_min:x_max]
             cropped_mask = masks[b:b+1, :, y_min:y_max, x_min:x_max]
             cropped_rgb = F.interpolate(cropped_rgb, size=(self.size, self.size), mode="bilinear")
@@ -345,7 +346,7 @@ class Dinov2Matcher:
         #matches[:,:3] = test_2d_coords[target_point_vars < var_threshold]
         #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
         #print(matches[:10])
-        #self.vis_3d_matches(images, matches)
+        self.vis_3d_matches(images, matches)
         return matches
         
     def match_batch(self, images):

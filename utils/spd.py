@@ -904,6 +904,17 @@ def save_pointcloud(pointcloud, filename):
         with open(filename, 'w') as f:
             for point in pointcloud:
                 f.write(f"{point[0]} {point[1]} {point[2]} {point[3]} {point[4]} {point[5]}\n")
+                
+def read_pointcloud(filename):
+    f = open(filename)
+    lines = f.readlines()
+    pointcloud = []
+    for line in lines:
+        x, y, z = float(line.split(' ')[0]), float(line.split(' ')[1]), float(line.split(' ')[2])
+        pointcloud.append([x, y, z])
+    pointcloud = np.array(pointcloud)
+    f.close()
+    return pointcloud
             
 def transform_pointcloud(pointcloud, transformation_matrix):
     

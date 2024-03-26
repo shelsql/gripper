@@ -18,7 +18,7 @@ from matcher import Dinov2Matcher
 
 from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud
 from utils.spd import save_pointcloud, transform_pointcloud, get_2dbboxes
-from utils.spd import image_coords_to_camera_space
+from utils.spd import image_coords_to_camera_space, read_pointcloud
 from utils.geometric_vision import solve_pnp_ransac, solve_pnp
 import cv2
 
@@ -98,7 +98,9 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         #cv2.imwrite("./match_vis/marked_2d_pts.png",marked_rgb)
         #save_pointcloud(pts_3d[:10], "./pointclouds/selected_pts.txt")
         matches = matches_3d[matches_3d[:,0] == i]
-        matches[:,1], matches[:,2] = matches[:,2], matches[:,1]
+        matches[:,[1,2]] = matches[:,[2,1]]
+        #print(matches)
+        save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
         pnp_retval, translation, rt_matrix = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
         
@@ -106,9 +108,12 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         #print(translation)
         #print("rt_matrix", rt_matrix)
         print("rt_matrix_inv", np.linalg.inv(rt_matrix))
-        test_pointcloud = depth_map_to_pointcloud(depths[0,0], masks[0,0], intrinsics)
-        test_pointcloud = transform_pointcloud(test_pointcloud, np.linalg.inv(rt_matrix))
-        save_pointcloud(test_pointcloud, "./pointclouds/test_result_%.2d.txt" % step)
+        test_pointcloud_cam = depth_map_to_pointcloud(depths[0,0], masks[0,0], intrinsics)
+        save_pointcloud(test_pointcloud_cam, "./pointclouds/test_result_%.2d_cam.txt" % step)
+        test_pointcloud_cam2obj = transform_pointcloud(test_pointcloud_cam, np.linalg.inv(rt_matrix))
+        save_pointcloud(test_pointcloud_cam2obj, "./pointclouds/test_result_%.2d_cam2obj.txt" % step)
+        test_pointcloud_obj2cam = transform_pointcloud(pointcloud, rt_matrix)
+        save_pointcloud(test_pointcloud_obj2cam, "./pointclouds/test_result_%.2d_obj2cam.txt" % step)
         #print("gripper_rt", gripper_rt)
     
     scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics)
@@ -129,7 +134,7 @@ def main(
         shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        max_iters=10,
+        max_iters=1,
         log_freq=1,
         device_ids=[1],
 ):
@@ -169,7 +174,12 @@ def main(
     global_step = 0
     
     gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
-    gripper_pointcloud = sample_points_from_mesh(gripper_path, fps = True, n_pts=8192)
+    
+    pointcloud_path = "./pointclouds/gripper.txt"
+    if not os.path.exists(pointcloud_path):
+        gripper_pointcloud = sample_points_from_mesh(gripper_path, fps = True, n_pts=8192)
+    else:
+        gripper_pointcloud = read_pointcloud(pointcloud_path)
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     

@@ -89,29 +89,6 @@ cropped_masks = torch.zeros((N, 1, img_size, img_size), device = device)
 for b in range(N):
     y_min, x_min, y_max, x_max = bboxes[b,0], bboxes[b,1], bboxes[b,2], bboxes[b,3]
     
-    w = x_max-x_min
-    h = y_max-y_min
-    if h > w:
-        dif = h-w
-        x_min = x_min-dif//2
-        x_max = x_max+dif//2
-        if x_min < 0:
-            x_max = x_max - x_min
-            x_min = 0
-        if x_max > W:
-            x_min = x_min-x_max+W
-            x_max = W
-    elif w>h :
-        dif = w-h
-        y_min = y_min-dif//2
-        y_max = y_max+dif//2
-        if y_min < 0:
-            y_max = y_max - y_min
-            y_min = 0
-        if y_max > H:
-            y_min = y_min-y_max+H
-            y_max = H
-    
     cropped_rgb = rgbs[b:b+1, :, y_min:y_max, x_min:x_max]
     cropped_mask = masks[b:b+1, :, y_min:y_max, x_min:x_max]
     cropped_rgb = F.interpolate(cropped_rgb, size=(img_size, img_size), mode="bilinear")
