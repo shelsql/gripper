@@ -223,7 +223,7 @@ def main(
             
 def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
     # TODO how to optimize?
-    # TODO how to optimize?
+    # TODO 
 
     def transform_pointcloud_tensor(pointcloud, transformation_matrix):
         # Append a column of ones to make homogeneous coordinates
