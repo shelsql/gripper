@@ -347,7 +347,7 @@ class Dinov2Matcher:
         #matches[:,:3] = test_2d_coords[target_point_vars < var_threshold]
         #save_pointcloud(ref_3d_coords.cpu().numpy(), "./pointclouds/ref_3d_coords.txt")
         #print(matches[:10])
-        self.vis_3d_matches(images, matches)
+        # self.vis_3d_matches(images, matches)
         return matches
         
     def match_batch(self, images):
