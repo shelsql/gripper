@@ -28,7 +28,7 @@ torch.manual_seed(125)
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
-    
+
     rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
     depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
     masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
@@ -37,7 +37,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     c2ws = d['c2w'] # B, 4, 4
     o2ws = d['obj_pose'] # B, 4, 4
     intrinsics = d['intrinsics']
-    
+
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).to(device) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).to(device)
     ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).to(device)
@@ -121,7 +121,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
-    return None
+    return matches_3d,rt_matrix,test_camera_K,gt_pose
 
 def main(
         dname='ty',
@@ -183,7 +183,7 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
-
+    matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = [],[],[],[]
     while global_step < max_iters:
 
         global_step += 1
@@ -203,12 +203,13 @@ def main(
         sample = next(iterloader)
         read_time = time.time()-read_start_time
         iter_read_time += read_time
-        
-        # if sample is not None:
-        #     print("got the sample", torch.sum(sample['vis_g']))
-        
+
         if sample is not None:
-            _ = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
+            matches_3d,rt_matrix,test_camera_K,gt_pose = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
+            matches_3ds.append(matches_3d)
+            rt_matrixs.append(rt_matrix)
+            test_camera_Ks.append(test_camera_K)
+            gt_poses.append(gt_pose)
         else:
             print('sampling failed')
                   
@@ -216,9 +217,30 @@ def main(
         
         print('%s; step %06d/%d; itime %.2f' % (
             model_name, global_step, max_iters, iter_time))
-            
+
+    optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses)
     writer_t.close()
             
+def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
+    def transform_pointcloud_tensor(pointcloud, transformation_matrix):
+        # Append a column of ones to make homogeneous coordinates
+        ones_column = torch.ones((pointcloud.shape[0], 1), dtype=pointcloud.dtype, device=pointcloud.device)
+        homogeneous_points = torch.cat((pointcloud, ones_column), dim=1)
+        # Perform transformation
+        transformed_points = torch.matmul(transformation_matrix, homogeneous_points.t()).t()
+        # Divide by the last coordinate (homogeneous division)
+        transformed_points = transformed_points[:, :3] / transformed_points[:, 3].unsqueeze(1)
+        return transformed_points
+
+    rt_pred = torch.tensor(rt_matrixs[0],device=matches_3ds[0].device, dtype=matches_3ds[0].dtype,requires_grad=True)
+    gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)
+    for i in range(len(matches_3ds)):
+        fact_2d = matches_3ds[i][:, 1:3]
+        pred_3d = transform_pointcloud_tensor(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
+        proj_2d = (torch.tensor(test_camera_Ks[i],device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)@pred_3d.transpose(1, 0)).transpose(1, 0)[:, :2]
+        loss = torch.norm(fact_2d - proj_2d)
+        loss.backward()
+    print(1)
 
 if __name__ == '__main__':
     Fire(main)
