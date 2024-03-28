@@ -222,6 +222,7 @@ def main(
     writer_t.close()
             
 def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
+    # TODO how to optimize?
     def transform_pointcloud_tensor(pointcloud, transformation_matrix):
         # Append a column of ones to make homogeneous coordinates
         ones_column = torch.ones((pointcloud.shape[0], 1), dtype=pointcloud.dtype, device=pointcloud.device)
