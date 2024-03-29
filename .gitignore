@@ -10,3 +10,4 @@ pointclouds/
 dataset_exports/
 ref_views/
 test_views/
+*.npy
