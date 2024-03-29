@@ -215,7 +215,8 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
-    matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = [],[],[],[]    r_errors = []
+    matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = [],[],[],[]
+    r_errors = []
     t_errors = []
 
     while global_step < max_iters:
