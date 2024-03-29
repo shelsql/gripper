@@ -134,7 +134,7 @@ def main(
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        max_iters=1,
+        max_iters=20,
         log_freq=1,
         device_ids=[1],
 ):
@@ -242,9 +242,11 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
             fact_2d[:,[0,1]] = fact_2d[:,[1,0]]     # TODO 非常的奇怪，是因为前面有地方把这个顺序调换了？
             # use rotation matrix to change:
             # transform_pointcloud(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
-            pred_3d = quaternion_apply(q_pred,matches_3ds[i][:, 3:]) + t_pred
-            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[0])[:3,:3]),pred_3d) + torch.inverse(gt_poses[0])[:3,3]
-            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[i][:3,:3]),pred_3d) + gt_poses[i][:3,3]
+
+            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[i])[:3, :3]), matches_3ds[i][:, 3:]) + torch.inverse(gt_poses[i])[:3, 3]
+            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[0][:3,:3]),pred_3d) + gt_poses[0][:3,3]
+            pred_3d = quaternion_apply(q_pred,pred_3d) + t_pred
+
 
             proj_2d = (torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0))/pred_3d.transpose(1, 0)[2,:]).transpose(1, 0)[:, :2]
             loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e2*(1-torch.norm(q_pred))**2
