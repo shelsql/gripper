@@ -77,6 +77,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     
     gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
     gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
+    gt_pose = gt_cam_to_obj
     #print("o2w:", o2ws[0])
     #print("c2w:", c2ws[0])
     #print("gt_cam_to_obj:", gt_cam_to_obj)
@@ -153,7 +154,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     }
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
-    return matches_3d,rt_matrix,test_camera_K,gt_pose
+    return matches_3d, rt_matrix, test_camera_K, gt_pose, metrics
 
 def main(
         dname='ty',
@@ -166,9 +167,11 @@ def main(
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
+        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',
         max_iters=20,
         log_freq=1,
-        device_ids=[0],
+        device_ids=[3],
 ):
     device = 'cuda:%d' % device_ids[0]
     
@@ -190,8 +193,8 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    vis_dataset = SimTestDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_large_fov", features=True)
-    ref_dataset = ReferenceDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_lowres", num_views=840, features=True)
+    vis_dataset = SimTestDataset(dataset_location=test_dir, features=True)
+    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=True)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
