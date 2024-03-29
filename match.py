@@ -61,6 +61,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     #masks = (masks >= 9).float()
     images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
     matches_3d = matcher.match_and_fuse(d)  # N, 6
+    
 
     test_camera_K = np.zeros((3,3))
     #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
@@ -74,10 +75,11 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     test_camera_K[2,2] = 1
     #print(test_camera_K)
     
-    gt_pose = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
+    gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
+    gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
     #print("o2w:", o2ws[0])
     #print("c2w:", c2ws[0])
-    print("gt_cam_to_obj:", gt_pose)
+    #print("gt_cam_to_obj:", gt_cam_to_obj)
     #print("gt_cam_to_obj_inv", np.linalg.inv(gt_pose))
     
     #test_pc = depth_map_to_pointcloud(depths[0,0], ref_masks[0,0], intrinsics)
@@ -85,6 +87,10 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     #TODO cluster debug pose and PnP
 
     for i in range(rgbs.shape[0]):
+        if matches_3d is None:
+            print("No matches")
+            rt_matrix = np.eye(4)
+            continue
         #valid_pts_2d = torch.nonzero(masks[i,0] == 1)
         #print(valid_pts_2d.shape, valid_pts_2d)
         #exit()
@@ -104,24 +110,50 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         pnp_retval, translation, rt_matrix = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
         
-        #print(pnp_retval)
+        print("pnp_retval:", pnp_retval)
+        if not pnp_retval:
+            print("No PnP result")
+            rt_matrix = np.eye(4)
         #print(translation)
         #print("rt_matrix", rt_matrix)
-        print("rt_matrix_inv", np.linalg.inv(rt_matrix))
+        #print("rt_matrix_inv", np.linalg.inv(rt_matrix))
         test_pointcloud_cam = depth_map_to_pointcloud(depths[0,0], masks[0,0], intrinsics)
         save_pointcloud(test_pointcloud_cam, "./pointclouds/test_result_%.2d_cam.txt" % step)
         test_pointcloud_cam2obj = transform_pointcloud(test_pointcloud_cam, np.linalg.inv(rt_matrix))
         save_pointcloud(test_pointcloud_cam2obj, "./pointclouds/test_result_%.2d_cam2obj.txt" % step)
         test_pointcloud_obj2cam = transform_pointcloud(pointcloud, rt_matrix)
         save_pointcloud(test_pointcloud_obj2cam, "./pointclouds/test_result_%.2d_obj2cam.txt" % step)
+        test_pointcloud_gt_obj2cam = transform_pointcloud(pointcloud, gt_obj_to_cam)
+        save_pointcloud(test_pointcloud_gt_obj2cam, "./pointclouds/test_result_%.2d_gt_obj2cam.txt" % step)
+        test_pointcloud_gt_cam2obj = transform_pointcloud(test_pointcloud_cam, gt_cam_to_obj)
+        save_pointcloud(test_pointcloud_gt_cam2obj, "./pointclouds/test_result_%.2d_gt_cam2obj.txt" % step)
         #print("gripper_rt", gripper_rt)
     
     scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics)
     save_pointcloud(scene_pointcloud / 1000.0, "pointclouds/scene.txt")
-        
+    #t_error = np.linalg.norm(gt_obj_to_cam[:3, 3] - rt_matrix[:3, 3])
+    #r, _ = cv2.Rodrigues(np.dot(gt_obj_to_cam[:3, :3], np.linalg.inv(rt_matrix[:3, :3])))
+    #r_error = np.linalg.norm(r)
+    
+    
+    R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
+    T1 = gt_obj_to_cam[:3, 3]
+
+    R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
+    T2 = rt_matrix[:3, 3]
+
+    R = R1 @ R2.transpose()
+    theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+    shift = np.linalg.norm(T1-T2) * 100
+    
+    theta = min(theta, np.abs(180 - theta))
+    metrics = {
+        "r_error": theta,
+        "t_error": shift
+    }
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
-    return None
+    return rt_matrix, metrics
 
 def main(
         dname='ty',
@@ -134,9 +166,9 @@ def main(
         shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        max_iters=1,
+        max_iters=64,
         log_freq=1,
-        device_ids=[1],
+        device_ids=[0],
 ):
     device = 'cuda:%d' % device_ids[0]
     
@@ -158,8 +190,8 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = PoseDataset()
-    vis_dataset = SimTestDataset(features=True)
-    ref_dataset = ReferenceDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_lowres", num_views=840,features=True)
+    vis_dataset = SimTestDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_large_fov", features=True)
+    ref_dataset = ReferenceDataset(dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_lowres", num_views=840, features=True)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
@@ -183,6 +215,8 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
+    r_errors = []
+    t_errors = []
 
     while global_step < max_iters:
 
@@ -208,14 +242,38 @@ def main(
         #     print("got the sample", torch.sum(sample['vis_g']))
         
         if sample is not None:
-            _ = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
+            _, metrics = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
         else:
             print('sampling failed')
                   
         iter_time = time.time()-iter_start_time
         
-        print('%s; step %06d/%d; itime %.2f' % (
-            model_name, global_step, max_iters, iter_time))
+        r_error = metrics['r_error']
+        t_error = metrics['t_error']
+        r_errors.append(r_error)
+        t_errors.append(t_error)
+        
+        print('%s; step %06d/%d; itime %.2f; R_error %.2f; T_error %.2f' % (
+            model_name, global_step, max_iters, iter_time, r_error, t_error))
+    
+    num_samples = len(r_errors)
+    r_errors = np.array(r_errors)
+    t_errors = np.array(t_errors)
+    
+    thresholds = [
+        (5, 2),
+        (5, 5),
+        (10, 2),
+        (10, 5),
+        (10, 10)
+    ]
+    
+    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
+    
+    for r_thres, t_thres in thresholds:
+        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
+        acc = (good_samples / num_samples) * 100.0
+        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
             
     writer_t.close()
             

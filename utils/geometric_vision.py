@@ -189,7 +189,7 @@ def solve_pnp_ransac(
         #print("pnp_retval", pnp_retval)
         #print("rvec", rvec)
         #print("tvec", tvec)
-        #print("inliers", inliers.shape)
+        print("inliers", inliers.shape)
 
         translation = tvec[:, 0]
         quaternion = (convert_rvec_to_quaternion(rvec[:, 0]).xyzw)
