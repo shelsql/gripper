@@ -17,7 +17,7 @@ import hickle as hkl
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
-dataset_location = "./render_64views"
+dataset_location = "./render_large_fov"
 export_dir = "./export_ref_840"
 if not os.path.exists(export_dir):
     os.makedirs(export_dir)

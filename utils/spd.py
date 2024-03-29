@@ -1047,7 +1047,10 @@ def get_2dbboxes(masks):
                 if ymax > H:
                     ymin = ymin-ymax+H
                     ymax = H
-
+            ymin = max(ymin,0)
+            xmin = max(xmin,0)
+            ymax = min(ymax, H)
+            xmax = min(xmax, W)
             # Store bounding box coordinates
             bboxes[b] = torch.tensor([ymin, xmin, ymax, xmax])
     
