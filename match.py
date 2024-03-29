@@ -22,13 +22,13 @@ from utils.spd import image_coords_to_camera_space, read_pointcloud
 from utils.geometric_vision import solve_pnp_ransac, solve_pnp
 import cv2
 
-random.seed(125)
-np.random.seed(125)
-torch.manual_seed(125)
+random.seed(11)
+np.random.seed(11)
+torch.manual_seed(11)
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
-    
+
     rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
     depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
     masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
@@ -37,7 +37,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     c2ws = d['c2w'] # B, 4, 4
     o2ws = d['obj_pose'] # B, 4, 4
     intrinsics = d['intrinsics']
-    
+
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).to(device) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).to(device)
     ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).to(device)
@@ -153,7 +153,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     }
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
-    return rt_matrix, metrics
+    return matches_3d,rt_matrix,test_camera_K,gt_pose
 
 def main(
         dname='ty',
@@ -163,7 +163,7 @@ def main(
         rand_frames=False,
         crop_size=(256,448),
         use_augs=False, # resizing/jittering/color/blur augs
-        shuffle=False, # dataset shuffling
+        shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
         max_iters=64,
@@ -215,7 +215,7 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
-    r_errors = []
+    matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = [],[],[],[]    r_errors = []
     t_errors = []
 
     while global_step < max_iters:
@@ -237,12 +237,13 @@ def main(
         sample = next(iterloader)
         read_time = time.time()-read_start_time
         iter_read_time += read_time
-        
-        # if sample is not None:
-        #     print("got the sample", torch.sum(sample['vis_g']))
-        
+
         if sample is not None:
-            _, metrics = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
+            matches_3d,rt_matrix,test_camera_K,gt_pose, metrics = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
+            matches_3ds.append(matches_3d)
+            rt_matrixs.append(rt_matrix)
+            test_camera_Ks.append(test_camera_K)
+            gt_poses.append(gt_pose)
         else:
             print('sampling failed')
                   
@@ -274,9 +275,45 @@ def main(
         good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
         acc = (good_samples / num_samples) * 100.0
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
-            
+
+    optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses)
     writer_t.close()
-            
+from utils.quaternion_utils import *
+
+def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
+    # TODO how to optimize?
+    # matches_3ds: list[tensor(342,6),...] different shape
+    # other: list[np.array(4,4)or(3,3)], same shape
+
+    rt_matrixs = torch.tensor(rt_matrixs,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)          # b,4,4
+    test_camera_Ks = torch.tensor(test_camera_Ks,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
+    gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)              # b,4,4
+    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3,:3]),requires_grad=True)    # 4
+    t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
+    optimizer = torch.optim.Adam([q_pred,t_pred],lr=5e-3)
+
+    for iteration in range(200):
+        optimizer.zero_grad()
+        loss = 0
+        for i in range(len(matches_3ds)):
+            fact_2d = matches_3ds[i][:, 1:3].clone()    # 342,2
+            fact_2d[:,[0,1]] = fact_2d[:,[1,0]]     # TODO 非常的奇怪，是因为前面有地方把这个顺序调换了？
+            # use rotation matrix to change:
+            # transform_pointcloud(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
+            pred_3d = quaternion_apply(q_pred,matches_3ds[i][:, 3:]) + t_pred
+            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[0])[:3,:3]),pred_3d) + torch.inverse(gt_poses[0])[:3,3]
+            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[i][:3,:3]),pred_3d) + gt_poses[i][:3,3]
+
+            proj_2d = torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0)).transpose(1, 0)[:, :2]
+            loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e5*(1-torch.norm(q_pred))**2
+            _ = fact_2d - proj_2d
+            _unit = torch.norm(q_pred)
+        loss /= len(matches_3ds)
+        loss.backward()
+        optimizer.step()
+        if iteration == 190 :
+            pass
+
 
 if __name__ == '__main__':
     Fire(main)

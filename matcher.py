@@ -249,11 +249,11 @@ class Dinov2Matcher:
 
         select_mask = torch.zeros_like(self.feat_masks,device=self.device)
         select_mask[selected_refs] = 1
-        feat_masks = self.feat_masks * select_mask
+        selected_feat_masks = self.feat_masks * select_mask
 
-        cosine_sims = cosine_sims[:, feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
+        cosine_sims = cosine_sims[:, selected_feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
-        ref_idxs = ref_idxs[feat_masks[:,0] > 0] # N_ref_pts, 3
+        ref_idxs = ref_idxs[selected_feat_masks[:,0] > 0] # N_ref_pts, 3
         #good_refs = good_refs[batch_feat_masks[:,0] > 0] # N_batch_pts, N_ref
 
 
@@ -298,7 +298,7 @@ class Dinov2Matcher:
         #print(torch.tensor(target_point_vars>0.1)[:10])
         #exit()
         
-        #self.save_sim_pts(cosine_sims, ref_3d_coords)
+        # self.save_sim_pts(cosine_sims, ref_3d_coords)
         
         ##### 3D Fusion: Gaussian Smoothing
         
