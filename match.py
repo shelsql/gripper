@@ -232,9 +232,9 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
     gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)              # b,4,4
     q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3,:3]),requires_grad=True)    # 4
     t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
-    optimizer = torch.optim.Adam([q_pred,t_pred],lr=5e-3)
-
-    for iteration in range(200):
+    optimizer = torch.optim.Adam([{'params':q_pred,'lr':1e-2},{'params':t_pred,'lr':1e-2}],lr=1e-4 )
+    start_time = time.time()
+    for iteration in range(400):
         optimizer.zero_grad()
         loss = 0
         for i in range(len(matches_3ds)):
@@ -246,15 +246,17 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
             pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[0])[:3,:3]),pred_3d) + torch.inverse(gt_poses[0])[:3,3]
             pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[i][:3,:3]),pred_3d) + gt_poses[i][:3,3]
 
-            proj_2d = torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0)).transpose(1, 0)[:, :2]
-            loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e5*(1-torch.norm(q_pred))**2
-            _ = fact_2d - proj_2d
+            proj_2d = (torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0))/pred_3d.transpose(1, 0)[2,:]).transpose(1, 0)[:, :2]
+            loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e2*(1-torch.norm(q_pred))**2
+            _ = torch.mean(torch.norm(fact_2d - proj_2d,dim=1))
             _unit = torch.norm(q_pred)
         loss /= len(matches_3ds)
         loss.backward()
         optimizer.step()
-        if iteration == 190 :
+        if iteration == 350 :
             pass
+    end_time = time.time()
+    print("Time", end_time - start_time)
 
 
 if __name__ == '__main__':
