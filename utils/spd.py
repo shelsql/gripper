@@ -389,7 +389,7 @@ def compute_IoU_matches(gt_class_ids, gt_sRT, gt_size, gt_handle_visibility,
     return gt_matches, pred_matches, overlaps, indices
 
 
-def compute_RT_errors(sRT_1, sRT_2, class_id, handle_visibility, synset_names):
+def compute_RT_errors(sRT_1, sRT_2, ):
     """
     Args:
         sRT_1: [4, 4]. homogeneous affine transformation
@@ -414,15 +414,15 @@ def compute_RT_errors(sRT_1, sRT_2, class_id, handle_visibility, synset_names):
     R2 = sRT_2[:3, :3] / np.cbrt(np.linalg.det(sRT_2[:3, :3]))
     T2 = sRT_2[:3, 3]
     # symmetric when rotating around y-axis
-    if synset_names[class_id] in ['bottle', 'can', 'bowl'] or \
-        (synset_names[class_id] == 'mug' and handle_visibility == 0):
-        y = np.array([0, 1, 0])
-        y1 = R1 @ y
-        y2 = R2 @ y
-        cos_theta = y1.dot(y2) / (np.linalg.norm(y1) * np.linalg.norm(y2))
-    else:
-        R = R1 @ R2.transpose()
-        cos_theta = (np.trace(R) - 1) / 2
+    # if synset_names[class_id] in ['bottle', 'can', 'bowl'] or \
+    #     (synset_names[class_id] == 'mug' and handle_visibility == 0):
+    #     y = np.array([0, 1, 0])
+    #     y1 = R1 @ y
+    #     y2 = R2 @ y
+    #     cos_theta = y1.dot(y2) / (np.linalg.norm(y1) * np.linalg.norm(y2))
+    # else:
+    R = R1 @ R2.transpose()
+    cos_theta = (np.trace(R) - 1) / 2
 
     theta = np.arccos(np.clip(cos_theta, -1.0, 1.0)) * 180 / np.pi
     shift = np.linalg.norm(T1 - T2) * 100
@@ -842,10 +842,10 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
         depth_map[mask == 0] = -1
     
     # Unpack intrinsic matrix
-    fx = intrinsics['fx'].item()
-    fy = intrinsics['fy'].item()
-    cx = intrinsics['cx'].item()
-    cy = intrinsics['cy'].item()
+    fx = torch.tensor(intrinsics['fx']).item()
+    fy = torch.tensor(intrinsics['fy']).item()
+    cx = torch.tensor(intrinsics['cx']).item()
+    cy = torch.tensor(intrinsics['cy']).item()
     
     # Create grid of pixel coordinates
     u, v = np.meshgrid(np.arange(W), np.arange(H))
@@ -1053,6 +1053,7 @@ def get_2dbboxes(masks):
             xmax = min(xmax, W)
             # Store bounding box coordinates
             bboxes[b] = torch.tensor([ymin, xmin, ymax, xmax])
+            bboxes = torch.clamp(bboxes,0)
     
     return bboxes.int().numpy()
 
@@ -1105,3 +1106,8 @@ def calc_coords_3d_var(sims_and_coords, threshold):
     vars = torch.nansum(vars, axis = 1)
     
     return vars
+
+
+if __name__ == '__main__':
+    points = np.random.random((8,3))
+    result = farthest_point_sampling(points,4)
