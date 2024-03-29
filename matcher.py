@@ -87,9 +87,10 @@ class Dinov2Matcher:
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
-        # self.centers, self.ref_bags = self.gen_and_save_refs_bags()
-        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/render_lowres/vision_word_list.npy') # 2048x1024
-        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/render_lowres/ref_bags.npy')
+        #_,_ = self.gen_and_save_refs_bags()
+        #exit()
+        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/vision_word_list.npy') # 2048x1024
+        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/ref_bags.npy')
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
@@ -697,14 +698,16 @@ class Dinov2Matcher:
 
         centers = kmeans.cluster_centers_   # 2048,1024
 
-        descriptors_centers_dis = pairwise_euclidean_distance(ref_features, torch.tensor(centers,device=self.device))# 26326,2048
-        sorted_dis,sorted_indices = torch.sort(descriptors_centers_dis, dim=1)# both 26326,2048
         ref_bags = torch.zeros(N_refs,2048).to(self.device)     # 64,2048
+        
+        centers_tensor = torch.tensor(centers,device=self.device)
 
-        for i in range(n_ref_pts):  # TODO how to not use forloop
+        for i in tqdm(range(n_ref_pts)):  # TODO how to not use forloop
+            descriptors_centers_dis = pairwise_euclidean_distance(ref_features[i:i+1], centers_tensor)# 26326,2048
+            sorted_dis,sorted_indices = torch.sort(descriptors_centers_dis, dim=1)# both 26326,2048
             for j in range(3):
-                indice = sorted_indices[i,j]
-                dis = torch.exp(-(sorted_dis[i,j]**2)/200)
+                indice = sorted_indices[0,j]
+                dis = torch.exp(-(sorted_dis[0,j]**2)/200)
                 ref_bags[ref_img_ids[i],indice] += dis
 
         ref_bags = np.array(ref_bags.cpu())
