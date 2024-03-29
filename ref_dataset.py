@@ -94,7 +94,7 @@ class ReferenceDataset(Dataset):
     
 class SimTestDataset(Dataset):
     def __init__(self,
-                 dataset_location="/root/autodl-tmp/shiqian/code/gripper/render_random",
+                 dataset_location="/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64",
                  use_augs=False,
                  features=False
                  ):
