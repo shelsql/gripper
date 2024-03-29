@@ -227,7 +227,7 @@ class Dinov2Matcher:
         cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, N_refs, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
         batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
         
-        self.vis_corr_map(cosine_sims, batch_feat_masks, cropped_rgbs)
+        # self.vis_corr_map(cosine_sims, batch_feat_masks, cropped_rgbs)
         
         #batch_max_sims = torch.max(cosine_sims.reshape(B, feat_H, feat_W, N_refs, feat_H*feat_W), axis = 4) # B, 32, 32, Nref
         #good_refs = batch_max_sims > 0.9 # B, 32, 32, N_ref   bool
@@ -243,11 +243,11 @@ class Dinov2Matcher:
 
         select_mask = torch.zeros_like(self.feat_masks,device=self.device)
         select_mask[selected_refs] = 1
-        self.feat_masks = self.feat_masks * select_mask
+        selected_feat_masks = self.feat_masks * select_mask
 
-        cosine_sims = cosine_sims[:, self.feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
+        cosine_sims = cosine_sims[:, selected_feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
-        ref_idxs = ref_idxs[self.feat_masks[:,0] > 0] # N_ref_pts, 3
+        ref_idxs = ref_idxs[selected_feat_masks[:,0] > 0] # N_ref_pts, 3
         #good_refs = good_refs[batch_feat_masks[:,0] > 0] # N_batch_pts, N_ref
 
 
@@ -291,7 +291,7 @@ class Dinov2Matcher:
         #print(torch.tensor(target_point_vars>0.1)[:10])
         #exit()
         
-        self.save_sim_pts(cosine_sims, ref_3d_coords)
+        # self.save_sim_pts(cosine_sims, ref_3d_coords)
         
         ##### 3D Fusion: Gaussian Smoothing
         

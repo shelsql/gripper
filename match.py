@@ -22,9 +22,9 @@ from utils.spd import image_coords_to_camera_space, read_pointcloud
 from utils.geometric_vision import solve_pnp_ransac, solve_pnp
 import cv2
 
-random.seed(125)
-np.random.seed(125)
-torch.manual_seed(125)
+random.seed(11)
+np.random.seed(11)
+torch.manual_seed(11)
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
@@ -131,7 +131,7 @@ def main(
         rand_frames=False,
         crop_size=(256,448),
         use_augs=False, # resizing/jittering/color/blur augs
-        shuffle=False, # dataset shuffling
+        shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
         max_iters=1,
@@ -220,30 +220,42 @@ def main(
 
     optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses)
     writer_t.close()
-            
+from utils.quaternion_utils import *
+
 def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
     # TODO how to optimize?
-    # TODO
+    # matches_3ds: list[tensor(342,6),...] different shape
+    # other: list[np.array(4,4)or(3,3)], same shape
 
-    def transform_pointcloud_tensor(pointcloud, transformation_matrix):
-        # Append a column of ones to make homogeneous coordinates
-        ones_column = torch.ones((pointcloud.shape[0], 1), dtype=pointcloud.dtype, device=pointcloud.device)
-        homogeneous_points = torch.cat((pointcloud, ones_column), dim=1)
-        # Perform transformation
-        transformed_points = torch.matmul(transformation_matrix, homogeneous_points.t()).t()
-        # Divide by the last coordinate (homogeneous division)
-        transformed_points = transformed_points[:, :3] / transformed_points[:, 3].unsqueeze(1)
-        return transformed_points
+    rt_matrixs = torch.tensor(rt_matrixs,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)          # b,4,4
+    test_camera_Ks = torch.tensor(test_camera_Ks,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
+    gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)              # b,4,4
+    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3,:3]),requires_grad=True)    # 4
+    t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
+    optimizer = torch.optim.Adam([q_pred,t_pred],lr=5e-3)
 
-    rt_pred = torch.tensor(rt_matrixs[0],device=matches_3ds[0].device, dtype=matches_3ds[0].dtype,requires_grad=True)
-    gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)
-    for i in range(len(matches_3ds)):
-        fact_2d = matches_3ds[i][:, 1:3]
-        pred_3d = transform_pointcloud_tensor(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
-        proj_2d = (torch.tensor(test_camera_Ks[i],device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)@pred_3d.transpose(1, 0)).transpose(1, 0)[:, :2]
-        loss = torch.norm(fact_2d - proj_2d)
+    for iteration in range(200):
+        optimizer.zero_grad()
+        loss = 0
+        for i in range(len(matches_3ds)):
+            fact_2d = matches_3ds[i][:, 1:3].clone()    # 342,2
+            fact_2d[:,[0,1]] = fact_2d[:,[1,0]]     # TODO 非常的奇怪，是因为前面有地方把这个顺序调换了？
+            # use rotation matrix to change:
+            # transform_pointcloud(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
+            pred_3d = quaternion_apply(q_pred,matches_3ds[i][:, 3:]) + t_pred
+            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[0])[:3,:3]),pred_3d) + torch.inverse(gt_poses[0])[:3,3]
+            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[i][:3,:3]),pred_3d) + gt_poses[i][:3,3]
+
+            proj_2d = torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0)).transpose(1, 0)[:, :2]
+            loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e5*(1-torch.norm(q_pred))**2
+            _ = fact_2d - proj_2d
+            _unit = torch.norm(q_pred)
+        loss /= len(matches_3ds)
         loss.backward()
-    print(1)
+        optimizer.step()
+        if iteration == 190 :
+            pass
+
 
 if __name__ == '__main__':
     Fire(main)
