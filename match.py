@@ -22,9 +22,10 @@ from utils.spd import image_coords_to_camera_space, read_pointcloud
 from utils.geometric_vision import solve_pnp_ransac, solve_pnp
 import cv2
 
-random.seed(11)
-np.random.seed(11)
-torch.manual_seed(11)
+random.seed(123)
+np.random.seed(123)
+torch.manual_seed(123)
+
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
@@ -47,7 +48,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     #masks = (masks >= 9).float()
     images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
     matches_3d = matcher.match_and_fuse(d, step)  # N, 6
-    
+
 
     test_camera_K = np.zeros((3,3))
     #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
@@ -155,7 +156,7 @@ def main(
         log_dir='./logs_match',
         ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_39.6_840',
         test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_39.6_64',
-        max_iters=20,
+        max_iters=64,
         log_freq=1,
         device_ids=[1],
 ):
@@ -204,12 +205,14 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
-    matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = [],[],[],[]
-    r_errors = []
-    t_errors = []
 
+    # r_errors = []
+    # t_errors = []
+
+    q_preds,t_preds,gt_poses_for_result = [],[],[]
     while global_step < max_iters:
-
+        print("Iteration {}".format(global_step))
+        matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
 
         iter_start_time = time.time()
@@ -236,7 +239,7 @@ def main(
             gt_poses.append(gt_pose)
             # select several test views to optimize
             test_views_used_for_opt = fps_optimize_views_from_test(
-                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=16)
+                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=1)
             for view_idx in test_views_used_for_opt:
                 matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(vis_dataset[view_idx], refs,
                      gripper_pointcloud, matcher, device, dname,
@@ -248,21 +251,28 @@ def main(
 
         else:
             print('sampling failed')
-        optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses)
+        q_pred,t_pred = optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses)
+        q_preds.append(q_pred)
+        t_preds.append(t_pred)
+        gt_poses_for_result.append(gt_poses[0])
 
         iter_time = time.time()-iter_start_time
         # TODO 优化后的结果
-        r_error = metrics['r_error']
-        t_error = metrics['t_error']
-        r_errors.append(r_error)
-        t_errors.append(t_error)
+        # r_error = metrics['r_error']
+        # t_error = metrics['t_error']
+        # r_errors.append(r_error)
+        # t_errors.append(t_error)
 
-        print('%s; step %06d/%d; itime %.2f; R_error %.2f; T_error %.2f' % (
-            model_name, global_step, max_iters, iter_time, r_error, t_error))
+        # print('%s; step %06d/%d; itime %.2f; R_error %.2f; T_error %.2f' % (
+        #     model_name, global_step, max_iters, iter_time, r_error, t_error))
+    q_preds = torch.stack(q_preds,dim=0)
+    t_preds = torch.stack(t_preds, dim=0)
+    gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
+    compute_results(q_preds, t_preds,gt_poses_for_result)
 
-    num_samples = len(r_errors)
-    r_errors = np.array(r_errors)
-    t_errors = np.array(t_errors)
+    # num_samples = len(r_errors)
+    # r_errors = np.array(r_errors)
+    # t_errors = np.array(t_errors)
 
     thresholds = [
         (5, 2),
@@ -272,12 +282,12 @@ def main(
         (10, 10)
     ]
 
-    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
-
-    for r_thres, t_thres in thresholds:
-        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
-        acc = (good_samples / num_samples) * 100.0
-        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
+    # print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
+    #
+    # for r_thres, t_thres in thresholds:
+    #     good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
+    #     acc = (good_samples / num_samples) * 100.0
+    #     print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
 
     writer_t.close()
@@ -295,7 +305,7 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
     t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
     optimizer = torch.optim.Adam([{'params':q_pred,'lr':1e-2},{'params':t_pred,'lr':1e-2}],lr=1e-4 )
     start_time = time.time()
-    for iteration in tqdm(range(400)):
+    for iteration in tqdm(range(200)):
         optimizer.zero_grad()
         loss = 0
         for i in range(len(matches_3ds)):
@@ -316,50 +326,9 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
         loss /= len(matches_3ds)
         loss.backward()
         optimizer.step()
-        if iteration == 350 :
+        if iteration == 160 :
             pass
-    r_pred = quaternion_to_matrix(q_pred)
-    rt_preds = torch.zeros_like(gt_poses)
-    rt_preds[:,:3,:3] = r_pred
-    rt_preds[:,:3,3] = t_pred
-    rt_preds[:,3,3] = 1
-    r_errors = []
-    t_errors = []
-    rt_preds = rt_preds.detach().cpu().numpy()
-    gt_poses = gt_poses.detach().cpu().numpy()
-    for i in range(gt_poses.shape[0]):
-        R1 = gt_poses[i,:3, :3]/np.cbrt(np.linalg.det(gt_poses[i,:3, :3]))
-        T1 = gt_poses[i,:3, 3]
 
-        R2 = rt_preds[i,:3, :3]/np.cbrt(np.linalg.det(rt_preds[i,:3, :3]))
-        T2 = rt_preds[i,:3, 3]
-
-        R = R1 @ R2.transpose()
-        theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
-        shift = np.linalg.norm(T1-T2) * 100
-        
-        theta = min(theta, np.abs(180 - theta))
-        r_errors.append(theta)
-        t_errors.append(shift)
-    
-    num_samples = len(r_errors)
-    r_errors = np.array(r_errors)
-    t_errors = np.array(t_errors)
-    
-    thresholds = [
-        (5, 2),
-        (5, 5),
-        (10, 2),
-        (10, 5),
-        (10, 10)
-    ]
-    
-    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
-    
-    for r_thres, t_thres in thresholds:
-        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
-        acc = (good_samples / num_samples) * 100.0
-        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
     end_time = time.time()
     print("Time", end_time - start_time)
@@ -386,7 +355,55 @@ def fps_optimize_views_from_test(path='/root/autodl-tmp/shiqian/code/gripper/tes
 
     return select_views
 
+def compute_results(q_preds,t_preds,gt_poses):
+    r_preds = quaternion_to_matrix(q_preds) # n.3.3
 
+    rt_preds = torch.zeros_like(gt_poses)   # n,4,4
+    rt_preds[:,:3,:3] = r_preds              #
+    rt_preds[:,:3,3] = t_preds
+    rt_preds[:,3,3] = 1
+
+
+    pose_preds = torch.inverse(rt_preds)
+
+    r_errors = []
+    t_errors = []
+    pose_preds = pose_preds.detach().cpu().numpy()
+    gt_poses = gt_poses.detach().cpu().numpy()
+
+    for i in range(gt_poses.shape[0]):
+        R1 = gt_poses[i,:3, :3]/np.cbrt(np.linalg.det(gt_poses[i,:3, :3]))
+        T1 = gt_poses[i,:3, 3]
+
+        R2 = pose_preds[i,:3, :3]/np.cbrt(np.linalg.det(pose_preds[i,:3, :3]))
+        T2 = pose_preds[i,:3, 3]
+
+        R = R1 @ R2.transpose()
+        theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+        shift = np.linalg.norm(T1-T2) * 100
+
+        theta = min(theta, np.abs(180 - theta))
+        r_errors.append(theta)
+        t_errors.append(shift)
+
+    num_samples = len(r_errors)
+    r_errors = np.array(r_errors)
+    t_errors = np.array(t_errors)
+
+    thresholds = [
+        (5, 2),
+        (5, 5),
+        (10, 2),
+        (10, 5),
+        (10, 10)
+    ]
+
+    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
+
+    for r_thres, t_thres in thresholds:
+        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
+        acc = (good_samples / num_samples) * 100.0
+        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
 if __name__ == '__main__':
     Fire(main)
