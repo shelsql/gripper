@@ -163,7 +163,7 @@ class SimTrackDataset(Dataset):
         total_frames = len(self.rgb_paths)
         print("Found %d frames in %s" % (total_frames, self.dataset_location))
         self.all_full_idx = []
-        for ii in range(0, max(total_frames-self.S,1), self.S):
+        for ii in range(0, max(total_frames-self.S+1,1), self.S):
             # print('bbox_areas[%d]' % ii, bbox_areas[ii])
             full_idx = ii + np.arange(self.S)
             full_idx = [ij for ij in full_idx if ij < total_frames]
@@ -175,7 +175,7 @@ class SimTrackDataset(Dataset):
     def __getitem__(self, index):
         
         full_idx = self.all_full_idx[index]
-        glob_paths = self.rgb_paths[full_idx]
+        glob_paths = [self.rgb_paths[i] for i in full_idx]
         rgbs = []
         depths = []
         masks = []

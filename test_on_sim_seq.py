@@ -12,7 +12,7 @@ import sys
 from tqdm import tqdm
 
 from datasets.ty_datasets import PoseDataset, TrackingDataset
-from datasets.ref_dataset import ReferenceDataset, SimTestDataset
+from datasets.ref_dataset import ReferenceDataset, SimTestDataset, SimTrackDataset
 from torch.utils.data import DataLoader
 from matcher import Dinov2Matcher
 
@@ -144,29 +144,27 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     return matches_3d[inlier.reshape(-1)],rt_matrix,test_camera_K,gt_pose,metrics
 
 def main(
-        dname='ty',
+        dname='sim',
         exp_name='debug',
         B=1, # batchsize
-        S=64, # seqlen
-        rand_frames=False,
-        crop_size=(256,448),
+        S=32, # seqlen
         use_augs=False, # resizing/jittering/color/blur augs
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
         ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
         max_iters=64,
         log_freq=1,
         device_ids=[1],
 ):
+    
+    # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
     device = 'cuda:%d' % device_ids[0]
     
-    exp_name = 'vis_seq' # Visualize every type of data in the samples: what are the different masks?
+    exp_name = 'test_on_sim_seq'
 
-    assert(crop_size[0] % 64 == 0)
-    assert(crop_size[1] % 64 == 0)
     
     ## autogen a descriptive name
     model_name = "%d_%d" % (B, S)
@@ -180,12 +178,11 @@ def main(
     print('model_name', model_name)
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    vis_dataset = PoseDataset()
-    vis_dataset = SimTestDataset(dataset_location=test_dir, features=True)
+    test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=True)
     ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=True)
-    vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
+    test_dataloader = DataLoader(test_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
-    iterloader = iter(vis_dataloader)
+    iterloader = iter(test_dataloader)
     # Load ref images and init Dinov2 Matcher
     refs = next(iter(ref_dataloader))
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
@@ -206,9 +203,6 @@ def main(
     
     matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
     
-
-    # r_errors = []
-    # t_errors = []
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
     while global_step < max_iters: # Num of test images
