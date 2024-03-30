@@ -16,7 +16,7 @@ from ref_dataset import ReferenceDataset, SimTestDataset
 from torch.utils.data import DataLoader
 from matcher import Dinov2Matcher
 
-from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud
+from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud,compute_RT_errors
 from utils.spd import save_pointcloud, transform_pointcloud, get_2dbboxes
 from utils.spd import image_coords_to_camera_space, read_pointcloud
 from utils.geometric_vision import solve_pnp_ransac, solve_pnp
@@ -28,34 +28,20 @@ torch.manual_seed(11)
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
-
-    rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
-    depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
-    masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
-    #kptss = d['kpts']
-    #npys = d['npy']
-    c2ws = d['c2w'] # B, 4, 4
-    o2ws = d['obj_pose'] # B, 4, 4
+    if len(torch.Tensor(d['rgb']).shape) == 3:  # 直接用dataset[i]取时
+        rgbs = torch.Tensor(d['rgb']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)  # B, C, H, W
+        depths = torch.Tensor(d['depth']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)
+        masks = torch.Tensor(d['mask']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)
+        c2ws = np.expand_dims(d['c2w'],axis=0)  # B, 4, 4
+        o2ws = np.expand_dims(d['obj_pose'],axis=0)   # B, 4, 4
+    else:
+        rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
+        depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
+        masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
+        c2ws = d['c2w'] # B, 4, 4
+        o2ws = d['obj_pose'] # B, 4, 4
     intrinsics = d['intrinsics']
 
-    ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).to(device) # B, S, C, H, W
-    ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).to(device)
-    ref_masks = torch.Tensor(refs['masks']).float().permute(0, 1, 4, 2, 3).to(device)
-    ref_c2ws = refs['c2ws']
-    ref_intrinsics = refs['intrinsics']
-    #print(kptss)
-    #print(npys)
-    
-    '''
-    gripper_info = kptss[0]['keypoints'][8]
-    print(gripper_info)
-    gripper_t = torch.tensor(gripper_info["location_wrt_cam"]).numpy()
-    gripper_r = torch.tensor(gripper_info["R2C_mat"]).numpy()
-    gripper_rt = np.zeros((4,4))
-    gripper_rt[:3, :3] = gripper_r
-    gripper_rt[:3, 3] = gripper_t
-    gripper_rt[3, 3] = 1
-    '''
     
     print(rgbs.shape, depths.shape, masks.shape)
     #masks = (masks >= 9).float()
@@ -108,7 +94,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         matches[:,[1,2]] = matches[:,[2,1]]
         #print(matches)
         save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
-        pnp_retval, translation, rt_matrix = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
+        pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
         
         print("pnp_retval:", pnp_retval)
@@ -135,8 +121,8 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     #t_error = np.linalg.norm(gt_obj_to_cam[:3, 3] - rt_matrix[:3, 3])
     #r, _ = cv2.Rodrigues(np.dot(gt_obj_to_cam[:3, :3], np.linalg.inv(rt_matrix[:3, :3])))
     #r_error = np.linalg.norm(r)
-    
-    
+
+
     R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
     T1 = gt_obj_to_cam[:3, 3]
 
@@ -146,7 +132,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     R = R1 @ R2.transpose()
     theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
     shift = np.linalg.norm(T1-T2) * 100
-    
+
     theta = min(theta, np.abs(180 - theta))
     metrics = {
         "r_error": theta,
@@ -154,7 +140,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     }
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
-    return matches_3d, rt_matrix, test_camera_K, gt_pose, metrics
+    return matches_3d[inlier.reshape(-1)],rt_matrix,test_camera_K,gt_pose,metrics
 
 def main(
         dname='ty',
@@ -171,7 +157,7 @@ def main(
         test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_39.6_64',
         max_iters=20,
         log_freq=1,
-        device_ids=[3],
+        device_ids=[1],
 ):
     device = 'cuda:%d' % device_ids[0]
     
@@ -248,23 +234,36 @@ def main(
             rt_matrixs.append(rt_matrix)
             test_camera_Ks.append(test_camera_K)
             gt_poses.append(gt_pose)
+            # select several test views to optimize
+            test_views_used_for_opt = fps_optimize_views_from_test(
+                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=16)
+            for view_idx in test_views_used_for_opt:
+                matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(vis_dataset[view_idx], refs,
+                     gripper_pointcloud, matcher, device, dname,
+                       global_step, sw=sw_t)
+                matches_3ds.append(matches_3d)
+                rt_matrixs.append(rt_matrix)
+                test_camera_Ks.append(test_camera_K)
+                gt_poses.append(gt_pose)
+
         else:
             print('sampling failed')
-                  
+        optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses)
+
         iter_time = time.time()-iter_start_time
-        
+        # TODO 优化后的结果
         r_error = metrics['r_error']
         t_error = metrics['t_error']
         r_errors.append(r_error)
         t_errors.append(t_error)
-        
+
         print('%s; step %06d/%d; itime %.2f; R_error %.2f; T_error %.2f' % (
             model_name, global_step, max_iters, iter_time, r_error, t_error))
-    
+
     num_samples = len(r_errors)
     r_errors = np.array(r_errors)
     t_errors = np.array(t_errors)
-    
+
     thresholds = [
         (5, 2),
         (5, 5),
@@ -272,15 +271,15 @@ def main(
         (10, 5),
         (10, 10)
     ]
-    
+
     print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
-    
+
     for r_thres, t_thres in thresholds:
         good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
         acc = (good_samples / num_samples) * 100.0
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
-    optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses)
+
     writer_t.close()
 from utils.quaternion_utils import *
 
@@ -364,6 +363,29 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
 
     end_time = time.time()
     print("Time", end_time - start_time)
+    return q_pred,t_pred
+
+def fps_optimize_views_from_test(path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',select_numbers=16):
+    poses = []
+    for pose_name in os.listdir(path):
+        if pose_name[-11:] == 'objpose.npy':
+            pose_path = os.path.join(path, pose_name)
+            poses.append(np.load(pose_path))
+    poses = np.array(poses)
+    dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
+    for i,pose1 in enumerate(poses):  # TODO batch形式
+        for j,pose2 in enumerate(poses):
+            dist_mat[i,j],_ = compute_RT_errors(pose1,pose2)
+    select_views = np.zeros((select_numbers,), dtype=int)
+    view_idx = 0
+    dist_to_set = dist_mat[:,view_idx]
+    for i in range(select_numbers):
+        select_views[i] = view_idx
+        dist_to_set = np.minimum(dist_to_set,dist_mat[:,view_idx])
+        view_idx = np.argmax(dist_to_set)
+
+    return select_views
+
 
 
 if __name__ == '__main__':

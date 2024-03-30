@@ -44,9 +44,9 @@ class Dinov2Matcher:
         #ref_rgbs = F.interpolate(ref_rgbs, scale_factor=0.15, mode="bilinear")
         #ref_depths = F.interpolate(ref_depths, scale_factor=0.15, mode="bilinear")
         #ref_masks = F.interpolate(ref_masks, scale_factor=0.15, mode="nearest")
-        ref_rgbs[ref_masks.repeat(1,3,1,1) == 0] = 0
+        # ref_rgbs[ref_masks.repeat(1,3,1,1) == 0] = 0  注意，这个操作发生了更改
         
-        ref_images = torch.concat([ref_rgbs, ref_depths[:,0:1], ref_masks[:,0:1]], axis = 1).to(device)
+        ref_images = torch.concat([ref_rgbs, ref_depths, ref_masks], axis = 1).to(device)
     
         self.ref_c2ws = c2ws.to(device)
         self.ref_w2cs = torch.stack([torch.linalg.inv(self.ref_c2ws[i]) for i in range(num_refs)], axis = 0)
@@ -207,9 +207,14 @@ class Dinov2Matcher:
     
     def match_and_fuse(self, sample, step=0):
 
-        rgbs = torch.Tensor(sample['rgb']).float().permute(0, 3, 1, 2).to(self.device) # B, C, H, W
-        depths = torch.Tensor(sample['depth']).float().permute(0, 3, 1, 2).to(self.device)
-        masks = torch.Tensor(sample['mask']).float().permute(0, 3, 1, 2).to(self.device)
+        if len(torch.Tensor(sample['rgb']).shape) == 3:  # 直接用dataset[i]取时
+            rgbs = torch.Tensor(sample['rgb']).float().unsqueeze(0).permute(0, 3, 1, 2).to(self.device)  # B, C, H, W
+            depths = torch.Tensor(sample['depth']).float().unsqueeze(0).permute(0, 3, 1, 2).to(self.device)
+            masks = torch.Tensor(sample['mask']).float().unsqueeze(0).permute(0, 3, 1, 2).to(self.device)
+        else:
+            rgbs = torch.Tensor(sample['rgb']).float().permute(0, 3, 1, 2).to(self.device)  # B, C, H, W
+            depths = torch.Tensor(sample['depth']).float().permute(0, 3, 1, 2).to(self.device)
+            masks = torch.Tensor(sample['mask']).float().permute(0, 3, 1, 2).to(self.device)
         
         rgbs[masks.repeat(1,3,1,1) == 0] = 0
         
@@ -223,7 +228,10 @@ class Dinov2Matcher:
         if sample['feat'] is None:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         else:
-            features = torch.tensor(sample['feat']).float().to(self.device)
+            if len(torch.Tensor(sample['rgb']).shape) == 3:
+                features = torch.tensor(sample['feat']).float().unsqueeze(0).to(self.device)
+            else:
+                features = torch.tensor(sample['feat']).float().to(self.device)
         N_tokens = feat_H * feat_W
         #print(features.shape)
         features = features.permute(0, 2, 3, 1).reshape(-1, feat_C) # B*N, C

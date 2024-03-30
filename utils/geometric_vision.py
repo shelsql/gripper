@@ -205,7 +205,7 @@ def solve_pnp_ransac(
         rt_matrix = None
         inliers = None
 
-    return pnp_retval, translation, rt_matrix#, inliers
+    return pnp_retval, translation, rt_matrix, inliers
 
 
 def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
