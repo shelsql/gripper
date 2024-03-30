@@ -234,9 +234,9 @@ def main(
             gt_poses.append(gt_pose)
             # select several test views to optimize
             test_views_used_for_opt = fps_optimize_views_from_test( 
-                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=1)
+                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=32)
             for view_idx in test_views_used_for_opt:
-                matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(vis_dataset[view_idx], refs,
+                matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(test_dataset[view_idx], refs,
                      gripper_pointcloud, matcher, device, dname,
                        global_step, sw=sw_t)
                 matches_3ds.append(matches_3d)
@@ -288,46 +288,62 @@ def main(
     writer_t.close()
 from utils.quaternion_utils import *
 
-def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
-    # TODO how to optimize?
+def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
+    '''删除垃圾点的迭代方法'''
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape
 
-    rt_matrixs = torch.tensor(rt_matrixs,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)          # b,4,4
-    test_camera_Ks = torch.tensor(test_camera_Ks,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
-    gt_poses = torch.tensor(gt_poses,device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)              # b,4,4
-    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3,:3]),requires_grad=True)    # 4
-    t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
-    optimizer = torch.optim.Adam([{'params':q_pred,'lr':1e-2},{'params':t_pred,'lr':1e-2}],lr=1e-4 )
+    rt_matrixs = torch.tensor(rt_matrixs, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
+    test_camera_Ks = torch.tensor(test_camera_Ks, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
+    gt_poses = torch.tensor(gt_poses, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
+    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3, :3]), requires_grad=True)  # 4
+    t_pred = torch.tensor(rt_matrixs[0][:3, 3], requires_grad=True)  # 3
+    optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 2e-2}, {'params': t_pred, 'lr': 2e-2}], lr=1e-4)
     start_time = time.time()
-    for iteration in tqdm(range(200)):
+    iteration = 0
+    loss_change = 1
+    loss_last = 0
+    while iteration < 400 and abs(loss_change) > 1e-7:
         optimizer.zero_grad()
-        loss = 0
+        # reproj_loss = 0
+        reproj_dis_list = []
         for i in range(len(matches_3ds)):
-            fact_2d = matches_3ds[i][:, 1:3].clone()    # 342,2
-            fact_2d[:,[0,1]] = fact_2d[:,[1,0]]     # TODO 非常的奇怪，是因为前面有地方把这个顺序调换了？
+            fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
+            fact_2d[:, [0, 1]] = fact_2d[:, [1, 0]]
             # use rotation matrix to change:
-            # transform_pointcloud(matches_3ds[i][:, 3:], gt_poses[i]@torch.inverse(gt_poses[0])@rt_pred)
+            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[i])[:3, :3]),
+                                       matches_3ds[i][:, 3:]) + torch.inverse(gt_poses[i])[:3, 3]
+            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[0][:3, :3]), pred_3d) + gt_poses[0][:3, 3]
+            pred_3d = quaternion_apply(q_pred, pred_3d) + t_pred
 
-            pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[i])[:3, :3]), matches_3ds[i][:, 3:]) + torch.inverse(gt_poses[i])[:3, 3]
-            pred_3d = quaternion_apply(matrix_to_quaternion(gt_poses[0][:3,:3]),pred_3d) + gt_poses[0][:3,3]
-            pred_3d = quaternion_apply(q_pred,pred_3d) + t_pred
+            proj_2d = (torch.matmul(test_camera_Ks[i], pred_3d.transpose(1, 0)) / pred_3d.transpose(1, 0)[2,
+                                                                                  :]).transpose(1, 0)[:, :2]  # 220,2
+            reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
+            reproj_dis_list.append(reproj_dis)
 
-
-            proj_2d = (torch.matmul(test_camera_Ks[i],pred_3d.transpose(1, 0))/pred_3d.transpose(1, 0)[2,:]).transpose(1, 0)[:, :2]
-            loss += torch.mean(torch.norm(fact_2d - proj_2d,dim=1)) + 1e2*(1-torch.norm(q_pred))**2
-            _ = torch.mean(torch.norm(fact_2d - proj_2d,dim=1))
+            _ = torch.mean(torch.norm(fact_2d - proj_2d, dim=1))
             _unit = torch.norm(q_pred)
-        loss /= len(matches_3ds)
+
+        reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
+        mean = reproj_dis_list.mean()
+        std = reproj_dis_list.std()
+        within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
+        reproj_dis_list = reproj_dis_list[within_3sigma]
+
+        loss = 1e4 * (1 - torch.norm(q_pred)) ** 2 + torch.mean(reproj_dis_list)
+
+        print(iteration, loss.item())
+
         loss.backward()
         optimizer.step()
-        if iteration == 160 :
-            pass
 
+        loss_change = loss - loss_last
+        loss_last = loss
+        iteration += 1
 
     end_time = time.time()
     print("Time", end_time - start_time)
-    return q_pred,t_pred
+    return q_pred, t_pred
 
 def fps_optimize_views_from_test(path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',select_numbers=16):
     poses = []
