@@ -60,7 +60,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     print(rgbs.shape, depths.shape, masks.shape)
     #masks = (masks >= 9).float()
     images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
-    matches_3d = matcher.match_and_fuse(d)  # N, 6
+    matches_3d = matcher.match_and_fuse(d, step)  # N, 6
     
 
     test_camera_K = np.zeros((3,3))
@@ -167,8 +167,8 @@ def main(
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',
+        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_39.6_840',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_39.6_64',
         max_iters=20,
         log_freq=1,
         device_ids=[3],
@@ -296,7 +296,7 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
     t_pred = torch.tensor(rt_matrixs[0][:3,3],requires_grad=True) # 3
     optimizer = torch.optim.Adam([{'params':q_pred,'lr':1e-2},{'params':t_pred,'lr':1e-2}],lr=1e-4 )
     start_time = time.time()
-    for iteration in range(400):
+    for iteration in tqdm(range(400)):
         optimizer.zero_grad()
         loss = 0
         for i in range(len(matches_3ds)):
@@ -319,6 +319,49 @@ def optimize_reproject(matches_3ds,rt_matrixs,test_camera_Ks,gt_poses):
         optimizer.step()
         if iteration == 350 :
             pass
+    r_pred = quaternion_to_matrix(q_pred)
+    rt_preds = torch.zeros_like(gt_poses)
+    rt_preds[:,:3,:3] = r_pred
+    rt_preds[:,:3,3] = t_pred
+    rt_preds[:,3,3] = 1
+    r_errors = []
+    t_errors = []
+    rt_preds = rt_preds.detach().cpu().numpy()
+    gt_poses = gt_poses.detach().cpu().numpy()
+    for i in range(gt_poses.shape[0]):
+        R1 = gt_poses[i,:3, :3]/np.cbrt(np.linalg.det(gt_poses[i,:3, :3]))
+        T1 = gt_poses[i,:3, 3]
+
+        R2 = rt_preds[i,:3, :3]/np.cbrt(np.linalg.det(rt_preds[i,:3, :3]))
+        T2 = rt_preds[i,:3, 3]
+
+        R = R1 @ R2.transpose()
+        theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+        shift = np.linalg.norm(T1-T2) * 100
+        
+        theta = min(theta, np.abs(180 - theta))
+        r_errors.append(theta)
+        t_errors.append(shift)
+    
+    num_samples = len(r_errors)
+    r_errors = np.array(r_errors)
+    t_errors = np.array(t_errors)
+    
+    thresholds = [
+        (5, 2),
+        (5, 5),
+        (10, 2),
+        (10, 5),
+        (10, 10)
+    ]
+    
+    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
+    
+    for r_thres, t_thres in thresholds:
+        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
+        acc = (good_samples / num_samples) * 100.0
+        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
+
     end_time = time.time()
     print("Time", end_time - start_time)
 
