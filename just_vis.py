@@ -11,8 +11,8 @@ from fire import Fire
 import sys
 from tqdm import tqdm
 
-from ty_datasets import PoseDataset, TrackingDataset
-from ref_dataset import ReferenceDataset
+from datasets.ty_datasets import PoseDataset, TrackingDataset
+from datasets.ref_dataset import ReferenceDataset, SimTrackDataset
 from torch.utils.data import DataLoader
 
 from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, save_pointcloud, transform_pointcloud, get_2dbboxes
@@ -25,11 +25,12 @@ def run_model(d, refs, pointcloud, device, dname, sw=None):
     metrics = {}
     
     rgbs = torch.Tensor(d['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
-    depths = torch.Tensor(d['depths']).float().unsqueeze(2)
+    depths = torch.Tensor(d['depths']).float().permute(0, 1, 4, 2, 3)
     masks = torch.Tensor(d['masks']).float().permute(0, 1, 4, 2, 3)
-    kptss = d['kptss']
-    npys = d['npys']
-    intrinsics = d['intrinsics']
+    #kptss = d['kptss']
+    #npys = d['npys']
+    #intrinsics = d['intrinsics']
+    print(rgbs.shape, depths.shape, masks.shape)
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
@@ -147,9 +148,9 @@ def main(
     print('model_name', model_name)
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    vis_dataset = TrackingDataset()
+    vis_dataset = SimTrackDataset(dataset_location="./test_views/franka_69.4_64", seqlen=8, features=True)
     #vis_dataset = 
-    ref_dataset = ReferenceDataset(dataset_location="./render_random", features=True)
+    ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=True)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
