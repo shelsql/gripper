@@ -154,8 +154,9 @@ def main(
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_39.6_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_39.6_64',
+        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',
+        optimize=False,
         max_iters=64,
         log_freq=1,
         device_ids=[1],
@@ -210,7 +211,7 @@ def main(
     # t_errors = []
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
-    while global_step < max_iters:
+    while global_step < max_iters: # Num of test images
         print("Iteration {}".format(global_step))
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
@@ -238,7 +239,7 @@ def main(
             test_camera_Ks.append(test_camera_K)
             gt_poses.append(gt_pose)
             # select several test views to optimize
-            test_views_used_for_opt = fps_optimize_views_from_test(
+            test_views_used_for_opt = fps_optimize_views_from_test( 
                 path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=1)
             for view_idx in test_views_used_for_opt:
                 matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(vis_dataset[view_idx], refs,

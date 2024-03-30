@@ -89,8 +89,8 @@ class Dinov2Matcher:
 
         #_,_ = self.gen_and_save_refs_bags()
         #exit()
-        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_39.6_840/vision_word_list.npy') # 2048x1024
-        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_39.6_840/ref_bags.npy')
+        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/vision_word_list.npy') # 2048x1024
+        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/ref_bags.npy')
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
