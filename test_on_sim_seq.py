@@ -29,26 +29,20 @@ torch.manual_seed(123)
 
 def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     metrics = {}
-    if len(torch.Tensor(d['rgb']).shape) == 3:  # 直接用dataset[i]取时
-        rgbs = torch.Tensor(d['rgb']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)  # B, C, H, W
-        depths = torch.Tensor(d['depth']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)
-        masks = torch.Tensor(d['mask']).float().unsqueeze(0).permute(0, 3, 1, 2).to(device)
-        c2ws = np.expand_dims(d['c2w'],axis=0)  # B, 4, 4
-        o2ws = np.expand_dims(d['obj_pose'],axis=0)   # B, 4, 4
-    else:
-        rgbs = torch.Tensor(d['rgb']).float().permute(0, 3, 1, 2).to(device) # B, C, H, W
-        depths = torch.Tensor(d['depth']).float().permute(0, 3, 1, 2).to(device)
-        masks = torch.Tensor(d['mask']).float().permute(0, 3, 1, 2).to(device)
-        c2ws = d['c2w'] # B, 4, 4
-        o2ws = d['obj_pose'] # B, 4, 4
+    rgbs = torch.Tensor(d['rgb'])[0].float().permute(0, 3, 1, 2).to(device) # B, C, H, W
+    depths = torch.Tensor(d['depth'])[0].float().permute(0, 3, 1, 2).to(device)
+    masks = torch.Tensor(d['mask'])[0].float().permute(0, 3, 1, 2).to(device)
+    c2ws = d['c2w'][0] # B, 4, 4
+    o2ws = d['obj_pose'][0] # B, 4, 4
     intrinsics = d['intrinsics']
 
     
-    print(rgbs.shape, depths.shape, masks.shape)
+    #print(rgbs.shape, depths.shape, masks.shape)
+    #print(c2ws.shape, o2ws.shape, intrinsics)
     #masks = (masks >= 9).float()
-    images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
-    matches_3d = matcher.match_and_fuse(d, step)  # N, 6
-
+    #images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
+    matches_3d = matcher.match_batch(d, step)  # N, 6
+    print(matches_3d[::10])
 
     test_camera_K = np.zeros((3,3))
     #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']

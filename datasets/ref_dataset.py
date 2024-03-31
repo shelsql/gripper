@@ -222,12 +222,12 @@ class SimTrackDataset(Dataset):
             feats = None
         #print(depths.shape)
         sample = {
-            "rgbs": rgbs,
-            "depths": depths,
-            "masks": masks,
-            "c2ws": c2ws,
-            "obj_poses": obj_poses,
-            "feats": feats,
+            "rgb": rgbs,
+            "depth": depths,
+            "mask": masks,
+            "c2w": c2ws,
+            "obj_pose": obj_poses,
+            "feat": feats,
             "intrinsics": camera_intrinsic
         }
         

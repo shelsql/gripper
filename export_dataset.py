@@ -17,10 +17,7 @@ import hickle as hkl
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
-dataset_location = "./test_views/powerdrill_39.6_64"
-export_dir = "./export_ref_840"
-if not os.path.exists(export_dir):
-    os.makedirs(export_dir)
+dataset_location = "./test_views/franka_69.4_1024"
 
 rgb_paths = glob.glob(dataset_location + "/*png")
 camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"

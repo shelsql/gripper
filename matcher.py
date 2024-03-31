@@ -369,9 +369,16 @@ class Dinov2Matcher:
         return matches
         
     def match_batch(self, sample, step = 0):
-        rgbs = torch.Tensor(sample['rgb']).float().permute(0, 3, 1, 2).to(self.device) # B, C, H, W
-        depths = torch.Tensor(sample['depth']).float().permute(0, 3, 1, 2).to(self.device)
-        masks = torch.Tensor(sample['mask']).float().permute(0, 3, 1, 2).to(self.device)
+        rgbs = torch.Tensor(sample['rgb']).float().to(self.device) # B, C, H, W
+        depths = torch.Tensor(sample['depth']).float().to(self.device)
+        masks = torch.Tensor(sample['mask']).float().to(self.device)
+        if len(rgbs.shape) == 5:
+            rgbs = rgbs[0]
+            depths = depths[0]
+            masks = masks[0]
+        rgbs = rgbs.permute(0, 3, 1, 2)
+        depths = depths.permute(0, 3, 1, 2)
+        masks = masks.permute(0, 3, 1, 2)
         #print(masks.sum())
         rgbs[masks.repeat(1,3,1,1) == 0] = 0
         
@@ -380,7 +387,6 @@ class Dinov2Matcher:
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         assert(feat_H == feat_W)
         feat_size = feat_H
-        #print(images[:,:3].max(),images[:,:3].min(),images[:,:3].mean())
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
         #print(cropped_masks.sum())
         #self.vis_rgbs(cropped_rgbs)
@@ -389,6 +395,8 @@ class Dinov2Matcher:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         else:
             features = torch.tensor(sample['feat']).float().to(self.device)
+            if len(features.shape) == 5:
+                features = features[0]
         N_tokens = feat_H * feat_W
         #print(features.shape)
         features = features.permute(0, 2, 3, 1).reshape(-1, feat_C) # B*N, C
@@ -436,12 +444,12 @@ class Dinov2Matcher:
         good_matches = max_sims > self.threshold
         if good_matches.sum() < 4:
             print("Not enough good matches, lowering threshold")
-            good_matches = max_sims >( self.threshold - 0.1)
+            good_matches = max_sims > (self.threshold - 0.1)
         max_inds = max_inds[good_matches]
         match_2d_coords = test_2d_coords[good_matches]
         match_3d_coords = ref_3d_coords[max_inds,1:]
         matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
-        self.vis_3d_matches(images, matches_3d, selected_refs, step)
+        #self.vis_3d_matches(images, matches_3d, selected_refs, step)
         print(matches_3d.shape)
         return matches_3d
     
