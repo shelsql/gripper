@@ -173,7 +173,7 @@ class SimTrackDataset(Dataset):
     
         
     def __getitem__(self, index):
-        
+        print('dataid',index)
         full_idx = self.all_full_idx[index]
         glob_paths = [self.rgb_paths[i] for i in full_idx]
         rgbs = []
