@@ -128,18 +128,18 @@ def main(
         dname='sim',
         exp_name='debug',
         B=1, # batchsize
-        S=32, # seqlen
+        S=16, # seqlen
         use_augs=False, # resizing/jittering/color/blur augs
         shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_69.4_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_69.4_1024',
+        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
         feat_layer=23, # Which layer of features from dinov2 to take
-        max_iters=32,
+        max_iters=1,
         log_freq=1,
-        device_ids=[0],
+        device_ids=[1],
 ):
     
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
@@ -219,7 +219,7 @@ def main(
             views_idx_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S // 4,start_idx=view_id)   # 对于当前view，用fps选出几个用来辅助优化的view
 
             q_pred,t_pred = optimize_reproject([matches_3ds[i] for i in views_idx_for_opt],
-                                               rt_matrixs[view_id],
+                                               [rt_matrixs[i] for i in views_idx_for_opt],
                                                [test_camera_Ks[i] for i in views_idx_for_opt],
                                                [gt_poses[i] for i in views_idx_for_opt])
             q_preds.append(q_pred)
@@ -257,15 +257,27 @@ def main(
 from utils.quaternion_utils import *
 
 def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
-    '''删除垃圾点的迭代方法'''
+    '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助'''
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape
 
     rt_matrixs = torch.tensor(rt_matrixs, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
     test_camera_Ks = torch.tensor(test_camera_Ks, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
     gt_poses = torch.tensor(gt_poses, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
-    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[:3, :3]), requires_grad=True)  # 4
-    t_pred = torch.tensor(rt_matrixs[:3, 3], requires_grad=True)  # 3
+    # 用所有初值相对于当前优化帧的姿势取平均
+    q_relative_list,t_relative_list = [],[]
+    for i in range(len(matches_3ds)):
+        rt_relative = rt_matrixs[i]@(gt_poses[i])@torch.inverse(gt_poses[0])
+        q_relative = matrix_to_quaternion(rt_relative[:3,:3])
+        q_relative_list.append(q_relative)
+        t_relative = rt_relative[:3,3]
+        t_relative_list.append(t_relative)
+    q_relative_avg = torch.mean(torch.stack(q_relative_list),dim=0)
+    t_relative_avg = torch.mean(torch.stack(t_relative_list), dim=0)
+    q_pred = torch.tensor(q_relative_avg/torch.norm(q_relative_avg),device=matches_3ds[0].device,requires_grad=True)
+    t_pred = torch.tensor(t_relative_avg,device=matches_3ds[0].device,requires_grad=True)
+    # q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[:3, :3]), requires_grad=True)  # 4
+    # t_pred = torch.tensor(rt_matrixs[:3, 3], requires_grad=True)  # 3
     optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 1e-2}, {'params': t_pred, 'lr': 1e-3}], lr=1e-4)
     start_time = time.time()
     iteration = 0
@@ -276,11 +288,9 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
         if iteration%10 == 0:   # 用在jupyter中的可视化
             qt_pred_for_vis.append((q_pred.tolist(), t_pred.tolist()))
         optimizer.zero_grad()
-        # reproj_loss = 0
         reproj_dis_list = []
         for i in range(len(matches_3ds)):
             fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
-            # fact_2d[:, [0, 1]] = fact_2d[:, [1, 0]]
             # use rotation matrix to change:
             pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[i])[:3, :3]),
                                        matches_3ds[i][:, 3:]) + torch.inverse(gt_poses[i])[:3, 3]
