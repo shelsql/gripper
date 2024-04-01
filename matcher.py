@@ -22,7 +22,7 @@ class Dinov2Matcher:
                  repo_name="facebookresearch/dinov2",
                  model_name="dinov2_vitl14_reg",
                  size=448,
-                 threshold=0,
+                 threshold=0.8,
                  upscale_ratio=1,
                  device="cuda:0"):
         print("Initializing DinoV2 Matcher...")
@@ -388,9 +388,6 @@ class Dinov2Matcher:
         assert(feat_H == feat_W)
         feat_size = feat_H
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
-        #print(cropped_masks.sum())
-        #self.vis_rgbs(cropped_rgbs)
-        #print(cropped_rgbs.max(), cropped_rgbs.min(), cropped_rgbs.mean())
         if sample['feat'] is None:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         else:
@@ -399,27 +396,28 @@ class Dinov2Matcher:
                 features = features[0]
         N_tokens = feat_H * feat_W
         #print(features.shape)
-        features = features.permute(0, 2, 3, 1).reshape(-1, feat_C) # B*N, C
-        ref_features = self.ref_features.permute(0, 2, 3, 1).reshape(-1, feat_C) # 32*N, C
-        cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
-        cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
-        cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, N_refs, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
+        features = features.permute(0, 2, 3, 1).reshape(N_tokens, feat_C) # B*N, C
         
         batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
-        #print(batch_feat_masks, batch_feat_masks.sum())
+        test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
+        test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
+        N_select = 1
+        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs,n=N_select).reshape(N_select)    # b,10 -> 10  TODO 现在只能batch=1
+        
+        ref_features = self.ref_features.permute(0, 2, 3, 1)
+        ref_features = ref_features[selected_refs].reshape(N_select*N_tokens, feat_C) # 32*N, C
+        cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
+        #cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
+        cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, N_select, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
         
         cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]  # N_batch_pts, Nref, 32, 32
 
-        test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
-        test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
-        print("cosine sims max:", cosine_sims.max())
-        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs,n=1).reshape(-1)    # b,10 -> 10  TODO 现在只能batch=1
-        select_mask = torch.zeros_like(self.feat_masks,device=self.device)
-        select_mask[selected_refs] = 1
-        feat_masks = self.feat_masks * select_mask
+        #print("cosine sims max:", cosine_sims.max())
+        feat_masks = self.feat_masks[selected_refs]
         cosine_sims = cosine_sims[:, feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
         
         ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
+        ref_idxs = ref_idxs[selected_refs]
         ref_idxs = ref_idxs[feat_masks[:,0] > 0] # N_ref_pts, 3
         #print(cosine_sims.shape)
         
@@ -449,8 +447,8 @@ class Dinov2Matcher:
         match_2d_coords = test_2d_coords[good_matches]
         match_3d_coords = ref_3d_coords[max_inds,1:]
         matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
-        #self.vis_3d_matches(images, matches_3d, selected_refs, step)
-        print(matches_3d.shape)
+        self.vis_3d_matches(images, matches_3d, selected_refs, step)
+        #print(matches_3d.shape)
         return matches_3d
     
     def match_2d_to_3d(self, matches_2d):
