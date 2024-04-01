@@ -35,20 +35,8 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     c2ws = d['c2w'][0] # B, 4, 4
     o2ws = d['obj_pose'][0] # B, 4, 4
     intrinsics = d['intrinsics']
-
     
-    #print(rgbs.shape, depths.shape, masks.shape)
-    #print(c2ws.shape, o2ws.shape, intrinsics)
-    #masks = (masks >= 9).float()
-    #images = torch.concat([rgbs, depths[:,0:1], masks[:,0:1]], axis = 1)
-    matches_3d = matcher.match_batch(d, step)  # N, 6
-    print(matches_3d[::10])
-
     test_camera_K = np.zeros((3,3))
-    #test_camera_K[0,0] = intrinsics['camera_settings'][0]['intrinsic_settings']['fx']
-    #test_camera_K[1,1] = intrinsics['camera_settings'][0]['intrinsic_settings']['fy']
-    #test_camera_K[0,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cx']
-    #test_camera_K[1,2] = intrinsics['camera_settings'][0]['intrinsic_settings']['cy']
     test_camera_K[0,0] = intrinsics['fx']
     test_camera_K[1,1] = intrinsics['fy']
     test_camera_K[0,2] = intrinsics['cx']
@@ -56,84 +44,72 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     test_camera_K[2,2] = 1
     #print(test_camera_K)
     
-    gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[0]), c2ws[0])
-    gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
-    gt_pose = gt_cam_to_obj
-    #print("o2w:", o2ws[0])
-    #print("c2w:", c2ws[0])
-    #print("gt_cam_to_obj:", gt_cam_to_obj)
-    #print("gt_cam_to_obj_inv", np.linalg.inv(gt_pose))
-    
-    #test_pc = depth_map_to_pointcloud(depths[0,0], ref_masks[0,0], intrinsics)
-    
-    #TODO cluster debug pose and PnP
 
-    for i in range(rgbs.shape[0]):
+    raw_r_errors = []
+    raw_t_errors = []
+    S = rgbs.shape[0]
+    for i in range(S):
+        start_time = time.time()
+        frame = {
+            'rgb': d['rgb'][0,i:i+1],
+            'depth': d['depth'][0,i:i+1],
+            'mask': d['mask'][0,i:i+1],
+            'feat': d['feat'][0,i:i+1],
+            'intrinsics': d['intrinsics']
+        }
+        matches_3d = matcher.match_batch(frame, i)  # N, 6i
+        #print(matches_3d[::10])
         if matches_3d is None:
             print("No matches")
             rt_matrix = np.eye(4)
             continue
-        #valid_pts_2d = torch.nonzero(masks[i,0] == 1)
-        #print(valid_pts_2d.shape, valid_pts_2d)
-        #exit()
-        #pts_2d = valid_pts_2d[::50].cpu().numpy()
-        #pts_3d = image_coords_to_camera_space(depths[0,0].cpu().numpy(), pts_2d, intrinsics)
-        #pts_3d = transform_pointcloud(pts_3d, gt_pose)
-        #print(pts_2d)
-        #print(pts_3d)
-        #marked_rgb = rgbs[0].permute(1,2,0).cpu().numpy()
-        #marked_rgb[pts_2d[:10,0], pts_2d[:10,1]] = np.array([0,0,255])
-        #cv2.imwrite("./match_vis/marked_2d_pts.png",marked_rgb)
-        #save_pointcloud(pts_3d[:10], "./pointclouds/selected_pts.txt")
-        matches = matches_3d[matches_3d[:,0] == i]
+        matches = matches_3d
         matches[:,[1,2]] = matches[:,[2,1]]
         #print(matches)
-        save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
+        #save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
         pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
         
-        print("pnp_retval:", pnp_retval)
+        #print("pnp_retval:", pnp_retval)
         if not pnp_retval:
             print("No PnP result")
             rt_matrix = np.eye(4)
-        #print(translation)
-        #print("rt_matrix", rt_matrix)
-        #print("rt_matrix_inv", np.linalg.inv(rt_matrix))
-        test_pointcloud_cam = depth_map_to_pointcloud(depths[0,0], masks[0,0], intrinsics)
-        save_pointcloud(test_pointcloud_cam, "./pointclouds/test_result_%.2d_cam.txt" % step)
-        test_pointcloud_cam2obj = transform_pointcloud(test_pointcloud_cam, np.linalg.inv(rt_matrix))
-        save_pointcloud(test_pointcloud_cam2obj, "./pointclouds/test_result_%.2d_cam2obj.txt" % step)
-        test_pointcloud_obj2cam = transform_pointcloud(pointcloud, rt_matrix)
-        save_pointcloud(test_pointcloud_obj2cam, "./pointclouds/test_result_%.2d_obj2cam.txt" % step)
-        test_pointcloud_gt_obj2cam = transform_pointcloud(pointcloud, gt_obj_to_cam)
-        save_pointcloud(test_pointcloud_gt_obj2cam, "./pointclouds/test_result_%.2d_gt_obj2cam.txt" % step)
-        test_pointcloud_gt_cam2obj = transform_pointcloud(test_pointcloud_cam, gt_cam_to_obj)
-        save_pointcloud(test_pointcloud_gt_cam2obj, "./pointclouds/test_result_%.2d_gt_cam2obj.txt" % step)
-        #print("gripper_rt", gripper_rt)
-    
-    scene_pointcloud = depth_map_to_pointcloud(depths[0,0], None, intrinsics)
-    save_pointcloud(scene_pointcloud / 1000.0, "pointclouds/scene.txt")
-    #t_error = np.linalg.norm(gt_obj_to_cam[:3, 3] - rt_matrix[:3, 3])
-    #r, _ = cv2.Rodrigues(np.dot(gt_obj_to_cam[:3, :3], np.linalg.inv(rt_matrix[:3, :3])))
-    #r_error = np.linalg.norm(r)
+            
+        gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
+        gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
+        gt_pose = gt_cam_to_obj
+        R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
+        T1 = gt_obj_to_cam[:3, 3]
 
+        R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
+        T2 = rt_matrix[:3, 3]
 
-    R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
-    T1 = gt_obj_to_cam[:3, 3]
+        R = R1 @ R2.transpose()
+        theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+        shift = np.linalg.norm(T1-T2) * 100
 
-    R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
-    T2 = rt_matrix[:3, 3]
-
-    R = R1 @ R2.transpose()
-    theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
-    shift = np.linalg.norm(T1-T2) * 100
-
-    theta = min(theta, np.abs(180 - theta))
-    metrics = {
-        "r_error": theta,
-        "t_error": shift
-    }
+        theta = min(theta, np.abs(180 - theta))
+        raw_r_errors.append(theta)
+        raw_t_errors.append(shift)
+        print("R_error: %.2f T_error: %.2f time:%.2f" % (theta, shift, time.time() - start_time))
+        
+    raw_r_errors = np.array(raw_r_errors)
+    raw_t_errors = np.array(raw_t_errors)
+    print("Single frame metrics")
+    print("Average R error: %.2f Average T error: %.2f" % (np.mean(raw_r_errors), np.mean(raw_t_errors)))
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
+
+    thresholds = [
+        (5, 2),
+        (5, 5),
+        (10, 2),
+        (10, 5),
+        (10, 10)
+    ]
+    for r_thres, t_thres in thresholds:
+        good_samples = np.sum(np.logical_and(raw_r_errors < r_thres, raw_t_errors < t_thres))
+        acc = (good_samples / S) * 100.0
+        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
     return matches_3d[inlier.reshape(-1)],rt_matrix,test_camera_K,gt_pose,metrics
 
