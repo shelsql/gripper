@@ -18,7 +18,7 @@ import hickle as hkl
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
 dataset_location = "./ref_views/powerdrill_69.4_840"
-layer = 19
+layer = 23
 device = "cuda:0"
 
 rgb_paths = glob.glob(dataset_location + "/*png")

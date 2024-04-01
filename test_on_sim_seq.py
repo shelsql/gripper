@@ -128,12 +128,13 @@ def main(
         shuffle=True, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
-        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
+        ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/powerdrill_69.4_840',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/powerdrill_69.4_1024',
         optimize=False,
-        max_iters=64,
+        feat_layer=23, # Which layer of features from dinov2 to take
+        max_iters=32,
         log_freq=1,
-        device_ids=[1],
+        device_ids=[0],
 ):
     
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
@@ -154,8 +155,8 @@ def main(
     print('model_name', model_name)
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=True)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=True)
+    test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
+    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=feat_layer)
     test_dataloader = DataLoader(test_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(test_dataloader)
@@ -177,8 +178,10 @@ def main(
     else:
         gripper_pointcloud = read_pointcloud(pointcloud_path)
     
-    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
-    
+    matcher = Dinov2Matcher(ref_dir=ref_dir, refs=refs,
+                            model_pointcloud=gripper_pointcloud,
+                            feat_layer = feat_layer,
+                            device=device)
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
     while global_step < max_iters: # Num of test images
