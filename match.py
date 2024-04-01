@@ -155,7 +155,7 @@ def main(
         is_training=True,
         log_dir='./logs_match',
         ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
-        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',
+        test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
         max_iters=64,
         log_freq=1,

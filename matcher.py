@@ -18,11 +18,12 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import KMeans
 class Dinov2Matcher:
-    def __init__(self, refs, model_pointcloud,
+    def __init__(self, ref_dir, refs, model_pointcloud,
+                 feat_layer,
                  repo_name="facebookresearch/dinov2",
                  model_name="dinov2_vitl14_reg",
                  size=448,
-                 threshold=0.8,
+                 threshold=0.7,
                  upscale_ratio=1,
                  device="cuda:0"):
         print("Initializing DinoV2 Matcher...")
@@ -31,6 +32,7 @@ class Dinov2Matcher:
         self.size = size
         self.threshold = threshold
         self.upscale_ratio = upscale_ratio
+        self.feat_layer = feat_layer
         self.device = device
         self.patch_size = 14
 
@@ -89,8 +91,8 @@ class Dinov2Matcher:
 
         #_,_ = self.gen_and_save_refs_bags()
         #exit()
-        self.vision_word_list = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/vision_word_list.npy') # 2048x1024
-        self.ref_bags = np.load('/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840/ref_bags.npy')
+        self.vision_word_list = np.load(ref_dir + '/vision_word_list_%.2d.npy' % feat_layer) # 2048x1024
+        self.ref_bags = np.load(ref_dir + '/ref_bags_%.2d.npy' % feat_layer)
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
@@ -121,7 +123,7 @@ class Dinov2Matcher:
         with torch.inference_mode():
             image_batch = images.to(self.device)
 
-            tokens = self.model.get_intermediate_layers(image_batch)[0]
+            tokens = self.model.get_intermediate_layers(image_batch, n = [self.feat_layer])[0]
             B, N_tokens, C = tokens.shape
             assert(N_tokens == self.size*self.size / 196)
             tokens = tokens.permute(0,2,1).reshape(B, C, self.size//14, self.size//14)

@@ -18,7 +18,7 @@ class ReferenceDataset(Dataset):
                  use_augs=False,
                  num_views=64,
                  strides=[1,2],
-                 features=False
+                 features=23
                  ):
         super().__init__()
         print("Loading reference view dataset...")
@@ -37,7 +37,7 @@ class ReferenceDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
-        if self.features:
+        if self.features > 0:
             feats = []
         
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
@@ -50,7 +50,6 @@ class ReferenceDataset(Dataset):
             mask_path = path + "_id1.exr"
             c2w_path = path + "_c2w.npy"
             obj_pose_path = path + "_objpose.npy"
-            feat_path = path + "_feats.npy"
             
             #print(rgb_path)
             rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
@@ -58,7 +57,8 @@ class ReferenceDataset(Dataset):
             mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
-            if self.features:
+            if self.features > 0:
+                feat_path = path + "_feats_%.2d.npy" % self.features
                 feat = np.load(feat_path)
                 feats.append(feat)
             
@@ -72,7 +72,7 @@ class ReferenceDataset(Dataset):
         masks = np.stack(masks, axis = 0)
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
-        if self.features:
+        if self.features > 0:
             feats = np.stack(feats, axis = 0)
         else:
             feats = None
@@ -96,7 +96,7 @@ class SimTestDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64",
                  use_augs=False,
-                 features=False
+                 features=23
                  ):
         super().__init__()
         print("Loading reference view dataset...")
@@ -118,7 +118,6 @@ class SimTestDataset(Dataset):
         mask_path = path + "_id1.exr"
         c2w_path = path + "_c2w.npy"
         obj_pose_path = path + "_objpose.npy"
-        feat_path = path + "_feats.npy"
         
         #print(rgb_path)
         rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
@@ -126,7 +125,8 @@ class SimTestDataset(Dataset):
         mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
         c2w = np.load(c2w_path)
         obj_pose = np.load(obj_pose_path)
-        if self.features:
+        if self.features > 0:
+            feat_path = path + "_feats_%.2d.npy" % self.features
             feat = np.load(feat_path)
             
         #print(depths.shape)
@@ -150,7 +150,7 @@ class SimTrackDataset(Dataset):
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024",
                  use_augs=False,
                  seqlen=64,
-                 features=False
+                 features=23
                  ):
         super().__init__()
         print("Loading reference view dataset...")
@@ -181,7 +181,7 @@ class SimTrackDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
-        if self.features:
+        if self.features > 0:
             feats = []
         
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
@@ -194,7 +194,6 @@ class SimTrackDataset(Dataset):
             mask_path = path + "_id1.exr"
             c2w_path = path + "_c2w.npy"
             obj_pose_path = path + "_objpose.npy"
-            feat_path = path + "_feats.npy"
             
             #print(rgb_path)
             rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
@@ -202,7 +201,8 @@ class SimTrackDataset(Dataset):
             mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
-            if self.features:
+            if self.features > 0:
+                feat_path = path + "_feats_%.2d.npy" % self.features
                 feat = np.load(feat_path)
                 feats.append(feat)
             
@@ -216,7 +216,7 @@ class SimTrackDataset(Dataset):
         masks = np.stack(masks, axis = 0)
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
-        if self.features:
+        if self.features > 0:
             feats = np.stack(feats, axis = 0)
         else:
             feats = None

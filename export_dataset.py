@@ -17,7 +17,9 @@ import hickle as hkl
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
-dataset_location = "./test_views/franka_69.4_1024"
+dataset_location = "./ref_views/powerdrill_69.4_840"
+layer = 19
+device = "cuda:0"
 
 rgb_paths = glob.glob(dataset_location + "/*png")
 camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
@@ -69,7 +71,6 @@ w2os = torch.tensor(obj_poses).float()
 cam_to_obj = torch.bmm(w2os, c2ws) # N, 4, 4
 
 N, C, H, W = rgbs.shape
-device = "cuda:2"
 img_size = 448
 
 print(cam_to_obj.shape)
@@ -119,7 +120,7 @@ with torch.inference_mode():
         start_idx = i*batch_size
         end_idx = min(N, (i+1)*batch_size)
         image_batch = cropped_rgbs[start_idx:end_idx]
-        tokens = dinov2.get_intermediate_layers(image_batch)[0]
+        tokens = dinov2.get_intermediate_layers(image_batch, n=[layer])[0]
         B, N_tokens, C = tokens.shape
         assert(N_tokens == img_size*img_size / 196)
         tokens = tokens.permute(0,2,1).reshape(B, C, img_size//14, img_size//14)
@@ -131,7 +132,7 @@ print(all_tokens.shape)
 print("Saving features...")
 for i in tqdm(range(N)):
     path = rgb_paths[i][:-8]
-    feat_path = path + "_feats.npy"
+    feat_path = path + "_feats_%.2d.npy" % layer
     np.save(feat_path, all_tokens[i].cpu().numpy())
 
 #torch.save(data_dict, "./dataset_exports/ref_840.pth")
