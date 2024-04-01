@@ -43,12 +43,14 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     test_camera_K[1,2] = intrinsics['cy']
     test_camera_K[2,2] = 1
     #print(test_camera_K)
-    
+
 
     raw_r_errors = []
     raw_t_errors = []
     S = rgbs.shape[0]
-    gt_poses = []
+
+    matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []  # 需要传出去的
+
     for i in range(S):
         start_time = time.time()
         frame = {
@@ -64,22 +66,27 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
             print("No matches")
             rt_matrix = np.eye(4)
             continue
-        matches = matches_3d
+        matches = matches_3d    # 这样写是对的，不用clone
         matches[:,[1,2]] = matches[:,[2,1]]
         #print(matches)
         #save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
         pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
         #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
-        
+
+        matches_3ds.append(matches_3d[inlier.reshape(-1)])
+        rt_matrixs.append(rt_matrix)
+        test_camera_Ks.append(test_camera_K)
+        gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
+        gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
+        gt_pose = gt_cam_to_obj
+        gt_poses.append(gt_pose)
+
         #print("pnp_retval:", pnp_retval)
         if not pnp_retval:
             print("No PnP result")
             rt_matrix = np.eye(4)
             
-        gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
-        gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
-        gt_pose = gt_cam_to_obj
-        gt_poses.append(gt_pose)
+
         R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
         T1 = gt_obj_to_cam[:3, 3]
 
@@ -97,7 +104,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         
     raw_r_errors = np.array(raw_r_errors)
     raw_t_errors = np.array(raw_t_errors)
-    print("Single frame metrics")
+    print("Single frame metrics,without optimization")
     print("Average R error: %.2f Average T error: %.2f" % (np.mean(raw_r_errors), np.mean(raw_t_errors)))
     #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
 
@@ -114,10 +121,8 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
     gt_poses = np.array(gt_poses)
-    test_views_used_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S//4)
-    print(test_views_used_for_opt)
 
-    return matches_3d[inlier.reshape(-1)],rt_matrix,test_camera_K,gt_pose,metrics
+    return matches_3ds,rt_matrixs,test_camera_Ks,gt_poses
 
 def main(
         dname='sim',
@@ -125,13 +130,13 @@ def main(
         B=1, # batchsize
         S=32, # seqlen
         use_augs=False, # resizing/jittering/color/blur augs
-        shuffle=True, # dataset shuffling
+        shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
         ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
         test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
-        max_iters=64,
+        max_iters=5,
         log_freq=1,
         device_ids=[1],
 ):
@@ -181,7 +186,7 @@ def main(
     
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
-    while global_step < max_iters: # Num of test images
+    while global_step < max_iters: 
         print("Iteration {}".format(global_step))
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
@@ -203,39 +208,23 @@ def main(
         iter_read_time += read_time
 
         if sample is not None:
-            matches_3d,rt_matrix,test_camera_K,gt_pose, metrics = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
-            matches_3ds.append(matches_3d)
-            rt_matrixs.append(rt_matrix)
-            test_camera_Ks.append(test_camera_K)
-            gt_poses.append(gt_pose)
-            # select several test views to optimize
-            test_views_used_for_opt = fps_optimize_views_from_test( 
-                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=32)
-            for view_idx in test_views_used_for_opt:
-                matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(test_dataset[view_idx], refs,
-                     gripper_pointcloud, matcher, device, dname,
-                       global_step, sw=sw_t)
-                matches_3ds.append(matches_3d)
-                rt_matrixs.append(rt_matrix)
-                test_camera_Ks.append(test_camera_K)
-                gt_poses.append(gt_pose)
-
+            matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, sw=sw_t)
         else:
             print('sampling failed')
-        q_pred,t_pred = optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses)
-        q_preds.append(q_pred)
-        t_preds.append(t_pred)
-        gt_poses_for_result.append(gt_poses[0])
+
+        for view_id in range(S):      # seq中的每一个view，都算一遍结果，从而得到整个数据集所有view的统计结果
+            views_idx_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S // 4,start_idx=view_id)   # 对于当前view，用fps选出几个用来辅助优化的view
+
+            q_pred,t_pred = optimize_reproject([matches_3ds[i] for i in views_idx_for_opt],
+                                               rt_matrixs[view_id],
+                                               [test_camera_Ks[i] for i in views_idx_for_opt],
+                                               [gt_poses[i] for i in views_idx_for_opt])
+            q_preds.append(q_pred)
+            t_preds.append(t_pred)
+            gt_poses_for_result.append(gt_poses[view_id])
 
         iter_time = time.time()-iter_start_time
-        # TODO 优化后的结果
-        # r_error = metrics['r_error']
-        # t_error = metrics['t_error']
-        # r_errors.append(r_error)
-        # t_errors.append(t_error)
 
-        # print('%s; step %06d/%d; itime %.2f; R_error %.2f; T_error %.2f' % (
-        #     model_name, global_step, max_iters, iter_time, r_error, t_error))
     q_preds = torch.stack(q_preds,dim=0)
     t_preds = torch.stack(t_preds, dim=0)
     gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
@@ -272,20 +261,23 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
     rt_matrixs = torch.tensor(rt_matrixs, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
     test_camera_Ks = torch.tensor(test_camera_Ks, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
     gt_poses = torch.tensor(gt_poses, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
-    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3, :3]), requires_grad=True)  # 4
-    t_pred = torch.tensor(rt_matrixs[0][:3, 3], requires_grad=True)  # 3
-    optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 2e-2}, {'params': t_pred, 'lr': 2e-2}], lr=1e-4)
+    q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[:3, :3]), requires_grad=True)  # 4
+    t_pred = torch.tensor(rt_matrixs[:3, 3], requires_grad=True)  # 3
+    optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 1e-2}, {'params': t_pred, 'lr': 1e-3}], lr=1e-4)
     start_time = time.time()
     iteration = 0
     loss_change = 1
     loss_last = 0
-    while iteration < 400 and abs(loss_change) > 1e-7:
+    qt_pred_for_vis = []
+    while iteration < 200 and abs(loss_change) > 1e-4:
+        if iteration%10 == 0:   # 用在jupyter中的可视化
+            qt_pred_for_vis.append((q_pred.tolist(), t_pred.tolist()))
         optimizer.zero_grad()
         # reproj_loss = 0
         reproj_dis_list = []
         for i in range(len(matches_3ds)):
             fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
-            fact_2d[:, [0, 1]] = fact_2d[:, [1, 0]]
+            # fact_2d[:, [0, 1]] = fact_2d[:, [1, 0]]
             # use rotation matrix to change:
             pred_3d = quaternion_apply(matrix_to_quaternion(torch.inverse(gt_poses[i])[:3, :3]),
                                        matches_3ds[i][:, 3:]) + torch.inverse(gt_poses[i])[:3, 3]
@@ -298,17 +290,17 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
             reproj_dis_list.append(reproj_dis)
 
             _ = torch.mean(torch.norm(fact_2d - proj_2d, dim=1))
-            _unit = torch.norm(q_pred)
+            # _unit = torch.norm(q_pred)
 
         reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
         mean = reproj_dis_list.mean()
         std = reproj_dis_list.std()
         within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
-        reproj_dis_list = reproj_dis_list[within_3sigma]
+        reproj_dis_list = reproj_dis_list[within_3sigma]    # 删除垃圾点
 
         loss = 1e4 * (1 - torch.norm(q_pred)) ** 2 + torch.mean(reproj_dis_list)
 
-        print(iteration, loss.item())
+        # print(iteration, loss.item())
 
         loss.backward()
         optimizer.step()
@@ -321,13 +313,13 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
     print("Time", end_time - start_time)
     return q_pred, t_pred
 
-def fps_optimize_views_from_test(poses, select_numbers=16):
+def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
     dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
     for i,pose1 in enumerate(poses):  # TODO batch形式
         for j,pose2 in enumerate(poses):
             dist_mat[i,j],_ = compute_RT_errors(pose1,pose2)
     select_views = np.zeros((select_numbers,), dtype=int)
-    view_idx = 0
+    view_idx = start_idx
     dist_to_set = dist_mat[:,view_idx]
     for i in range(select_numbers):
         select_views[i] = view_idx
