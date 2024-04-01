@@ -24,7 +24,7 @@ class Dinov2Matcher:
                  repo_name="facebookresearch/dinov2",
                  model_name="dinov2_vitl14_reg",
                  size=448,
-                 threshold=0.7,
+                 threshold=0.8,
                  upscale_ratio=1,
                  device="cuda:0"):
         print("Initializing DinoV2 Matcher...")

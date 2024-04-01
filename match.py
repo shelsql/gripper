@@ -204,7 +204,7 @@ def main(
     else:
         gripper_pointcloud = read_pointcloud(pointcloud_path)
     
-    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device)
+    matcher = Dinov2Matcher(refs=refs, model_pointcloud=gripper_pointcloud, device=device,threshold=0.2)
     
 
     # r_errors = []
@@ -240,7 +240,7 @@ def main(
             gt_poses.append(gt_pose)
             # select several test views to optimize
             test_views_used_for_opt = fps_optimize_views_from_test(
-                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=16)
+                path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64', select_numbers=32)
             for view_idx in test_views_used_for_opt:
                 matches_3d, rt_matrix, test_camera_K, gt_pose,_ = run_model(vis_dataset[view_idx], refs,
                      gripper_pointcloud, matcher, device, dname,
@@ -357,19 +357,24 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape
 
+
     rt_matrixs = torch.tensor(rt_matrixs, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
     test_camera_Ks = torch.tensor(test_camera_Ks, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
     gt_poses = torch.tensor(gt_poses, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
     q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[0][:3, :3]), requires_grad=True)  # 4
     t_pred = torch.tensor(rt_matrixs[0][:3, 3], requires_grad=True)  # 3
-    optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 4e-2}, {'params': t_pred, 'lr': 4e-2}], lr=1e-4)
+    optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 1e-2}, {'params': t_pred, 'lr': 1e-2}], lr=1e-4)
     start_time = time.time()
     iteration = 0
     loss_change = 1
     loss_last = 0
-    while iteration < 400 and abs(loss_change) > 1e-7:
+    predqt_for_vis = []
+    max_iteration = 1000
+    while iteration < max_iteration and abs(loss_change) > 1e-7:
+        if iteration%5 == 0:
+            predqt_for_vis.append((q_pred.tolist(), t_pred.tolist()))
+
         optimizer.zero_grad()
-        # reproj_loss = 0
         reproj_dis_list = []
         for i in range(len(matches_3ds)):
             fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
@@ -391,7 +396,7 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
         reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
         mean = reproj_dis_list.mean()
         std = reproj_dis_list.std()
-        within_3sigma = (reproj_dis_list >= mean - 0.5 * std) & (reproj_dis_list <= mean + 0.5 * std)
+        within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
         reproj_dis_list = reproj_dis_list[within_3sigma]
 
         loss = 1e4 * (1 - torch.norm(q_pred)) ** 2 + torch.mean(reproj_dis_list)
