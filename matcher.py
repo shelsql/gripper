@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import cv2
 from tqdm import tqdm
 import math
+import os
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
@@ -35,6 +36,7 @@ class Dinov2Matcher:
         self.feat_layer = feat_layer
         self.device = device
         self.patch_size = 14
+        self.ref_dir = ref_dir
 
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         num_refs, C, H, W = ref_rgbs.shape
@@ -89,10 +91,13 @@ class Dinov2Matcher:
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
-        #_,_ = self.gen_and_save_refs_bags()
+        if not os.path.exists(ref_dir + '/vision_word_list_%.2d.npy' % feat_layer):
+            print("Calculating BoW...")
+            _,_ = self.gen_and_save_refs_bags()
         #exit()
         self.vision_word_list = np.load(ref_dir + '/vision_word_list_%.2d.npy' % feat_layer) # 2048x1024
         self.ref_bags = np.load(ref_dir + '/ref_bags_%.2d.npy' % feat_layer)
+        #print(self.vision_word_list.shape, self.ref_bags.shape)
     # https://github.com/facebookresearch/dinov2/blob/255861375864acdd830f99fdae3d9db65623dafe/notebooks/features.ipynb
     def prepare_images(self, images):
         B, C, H, W = images.shape
@@ -394,6 +399,7 @@ class Dinov2Matcher:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         else:
             features = torch.tensor(sample['feat']).float().to(self.device)
+            print(features.shape)
             if len(features.shape) == 5:
                 features = features[0]
         N_tokens = feat_H * feat_W
@@ -727,8 +733,8 @@ class Dinov2Matcher:
                 ref_bags[ref_img_ids[i],indice] += dis
 
         ref_bags = np.array(ref_bags.cpu())
-        np.save('ref_bags.npy',ref_bags)
-        np.save('vision_word_list.npy',centers)
+        np.save(self.ref_dir + '/ref_bags_%.2d.npy' % self.feat_layer,ref_bags)
+        np.save(self.ref_dir + '/vision_word_list_%.2d.npy' % self.feat_layer,centers)
         return centers, ref_bags
 
     def select_refs(self,features,batch_feat_mask,b,test_idxs, n):
