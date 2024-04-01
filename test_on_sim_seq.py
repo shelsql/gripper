@@ -48,6 +48,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
     raw_r_errors = []
     raw_t_errors = []
     S = rgbs.shape[0]
+    gt_poses = []
     for i in range(S):
         start_time = time.time()
         frame = {
@@ -78,6 +79,7 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
         gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
         gt_pose = gt_cam_to_obj
+        gt_poses.append(gt_pose)
         R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
         T1 = gt_obj_to_cam[:3, 3]
 
@@ -110,6 +112,10 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         good_samples = np.sum(np.logical_and(raw_r_errors < r_thres, raw_t_errors < t_thres))
         acc = (good_samples / S) * 100.0
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
+
+    gt_poses = np.array(gt_poses)
+    test_views_used_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S//4)
+    print(test_views_used_for_opt)
 
     return matches_3d[inlier.reshape(-1)],rt_matrix,test_camera_K,gt_pose,metrics
 
@@ -315,13 +321,7 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses):
     print("Time", end_time - start_time)
     return q_pred, t_pred
 
-def fps_optimize_views_from_test(path='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_64',select_numbers=16):
-    poses = []
-    for pose_name in os.listdir(path):
-        if pose_name[-11:] == 'objpose.npy':
-            pose_path = os.path.join(path, pose_name)
-            poses.append(np.load(pose_path))
-    poses = np.array(poses)
+def fps_optimize_views_from_test(poses, select_numbers=16):
     dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
     for i,pose1 in enumerate(poses):  # TODO batch形式
         for j,pose2 in enumerate(poses):
