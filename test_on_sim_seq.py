@@ -28,7 +28,7 @@ np.random.seed(123)
 torch.manual_seed(123)
 
 
-def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, sw=None):
+def run_model(d, refs, pointcloud, matcher, device, dname, refine_mode,step,vis_dict=None, sw=None,):
     metrics = {}
     rgbs = torch.Tensor(d['rgb'])[0].float().permute(0, 3, 1, 2).to(device) # B, C, H, W
     depths = torch.Tensor(d['depth'])[0].float().permute(0, 3, 1, 2).to(device)
@@ -67,27 +67,37 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, s
         #     print("No matches")
         #     rt_matrix = np.eye(4)
         #     continue
-        matches_3d_multi_view = []
-        rt_matrix_multi_view = []
-        for matches_3d in matches_3d_list:
-            matches = matches_3d    # 这样写是对的，不用clone
-            matches[:,[1,2]] = matches[:,[2,1]]
-            pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
-            matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
-            rt_matrix_multi_view.append(rt_matrix)
+        if refine_mode == 'a':
+            matches_3d_multi_view = []
+            rt_matrix_multi_view = []
+            for matches_3d in matches_3d_list:
+                matches = matches_3d    # 这样写是对的，不用clone
+                matches[:,[1,2]] = matches[:,[2,1]]
+                pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
+                if inlier is not None:
+                    matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
+                    rt_matrix_multi_view.append(rt_matrix)
 
-        # 10个views都用（可能有重复），选inlier最多的rt_matrix
-        n = 0
-        select_id = 0
-        for idx in range(len(matches_3d_multi_view)):
-            if matches_3d_multi_view[idx].shape[0] > n:
-                n = matches_3d_multi_view[idx].shape[0]
-                select_id = idx
+            # 10个views都用（可能有重复），选inlier最多的rt_matrix
+            n = 0
+            select_id = 0
+            for idx in range(len(matches_3d_multi_view)):
+                if matches_3d_multi_view[idx].shape[0] > n:
+                    n = matches_3d_multi_view[idx].shape[0]
+                    select_id = idx
+            matches_3ds.append(torch.cat(matches_3d_multi_view,dim=0))
+            rt_matrixs.append(rt_matrix_multi_view[select_id])
 
+        elif refine_mode == 'b':
+            matches_3d = torch.cat(matches_3d_list,dim=0)
+            matches = matches_3d
+            matches[:, [1, 2]] = matches[:, [2, 1]]
+            pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:, 3:6].cpu().numpy(),
+                                                                          matches[:, 1:3].cpu().numpy(),
+                                                                          camera_K=test_camera_K)
+            matches_3ds.append(matches_3d[inlier.reshape(-1)])
+            rt_matrixs.append(rt_matrix)
 
-
-        matches_3ds.append(torch.cat(matches_3d_multi_view,dim=0))
-        rt_matrixs.append(rt_matrix_multi_view[select_id])
         test_camera_Ks.append(test_camera_K)
         gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
         gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
@@ -154,11 +164,11 @@ def main(
         test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
         feat_layer=19, # Which layer of features from dinov2 to take
-        max_iters=3,
+        max_iters=32,
         log_freq=1,
         device_ids=[2],
-        record_vis=True,
-
+        record_vis=False,
+        refine_mode='a'
 ):
     
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
@@ -233,7 +243,7 @@ def main(
         else:
             vis_dict = None
         if sample is not None:
-            matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, vis_dict,sw=sw_t)
+            matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, refine_mode,global_step, vis_dict,sw=sw_t)
         else:
             print('sampling failed')
         qt_pred_for_vis_seq = []
@@ -244,9 +254,7 @@ def main(
                                                [rt_matrixs[i] for i in views_idx_for_opt],
                                                [test_camera_Ks[i] for i in views_idx_for_opt],
                                                [gt_poses[i] for i in views_idx_for_opt],
-                                               qt_pred_for_vis_seq,
-                                               device=device,
-                                                dtype=matches_3ds[0][0].dtype)
+                                               qt_pred_for_vis_seq)
             q_preds.append(q_pred)
             t_preds.append(t_pred)
             gt_poses_for_result.append(gt_poses[view_id])
@@ -265,9 +273,9 @@ def main(
     gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
     r_errors,t_errors = compute_results(q_preds, t_preds,gt_poses_for_result)
     results = np.concatenate(([r_errors],[t_errors]),axis=0)
-    # if not os.path.exists(f'results'):
-    #     os.makedirs(f'results')
-    # np.savetxt(f'results/layer{feat_layer}_seq{S}.txt',results)
+    if not os.path.exists(f'results'):
+        os.makedirs(f'results')
+    np.savetxt(f'results/layer{feat_layer}_seq{S}_refine_mode{refine_mode}.txt',results)
 
     # num_samples = len(r_errors)
     # r_errors = np.array(r_errors)
@@ -292,21 +300,37 @@ def main(
     writer_t.close()
 from utils.quaternion_utils import *
 
-def optimize_reproject(matches_3d_multi_view, rt_matrixs_multi_view, test_camera_Ks, gt_poses,qt_pred_for_vis_seq,device,dtype):
+def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred_for_vis_seq):
     '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape'''
 
 
-
-
+    rt_matrixs = torch.tensor(rt_matrixs, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
+    test_camera_Ks = torch.tensor(test_camera_Ks, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,3,3
+    gt_poses = torch.tensor(gt_poses, device=matches_3ds[0].device, dtype=matches_3ds[0].dtype)  # b,4,4
+    # 用所有初值相对于当前优化帧的姿势取平均
+    q_relative_list, t_relative_list = [], []
+    for i in range(len(matches_3ds)):
+        rt_relative = rt_matrixs[i] @ (gt_poses[i]) @ torch.inverse(gt_poses[0])
+        q_relative = matrix_to_quaternion(rt_relative[:3, :3])
+        q_relative_list.append(q_relative)
+        t_relative = rt_relative[:3, 3]
+        t_relative_list.append(t_relative)
+    q_relative_avg = torch.mean(torch.stack(q_relative_list), dim=0)
+    t_relative_avg = torch.mean(torch.stack(t_relative_list), dim=0)
+    q_pred = torch.tensor(q_relative_avg / torch.norm(q_relative_avg), device=matches_3ds[0].device,
+                          requires_grad=True)
+    t_pred = torch.tensor(t_relative_avg, device=matches_3ds[0].device, requires_grad=True)
+    # q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[:3, :3]), requires_grad=True)  # 4
+    # t_pred = torch.tensor(rt_matrixs[:3, 3], requires_grad=True)  # 3
     optimizer = torch.optim.Adam([{'params': q_pred, 'lr': 1e-2}, {'params': t_pred, 'lr': 1e-3}], lr=1e-4)
     start_time = time.time()
     iteration = 0
     loss_change = 1
     loss_last = 0
     qt_pred_for_vis_frame = []
-    while iteration < 200 and abs(loss_change) > 1e-4:
+    while iteration < 400 and abs(loss_change) > 1e-4:
         qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
         optimizer.zero_grad()
         reproj_dis_list = []
@@ -319,7 +343,8 @@ def optimize_reproject(matches_3d_multi_view, rt_matrixs_multi_view, test_camera
             pred_3d = quaternion_apply(q_pred, pred_3d) + t_pred
 
             proj_2d = (torch.matmul(test_camera_Ks[i], pred_3d.transpose(1, 0)) / pred_3d.transpose(1, 0)[2,
-                                                                                  :]).transpose(1, 0)[:, :2]  # 220,2
+                                                                                  :]).transpose(1, 0)[:,
+                      :2]  # 220,2
             reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
             reproj_dis_list.append(reproj_dis)
 
@@ -329,8 +354,8 @@ def optimize_reproject(matches_3d_multi_view, rt_matrixs_multi_view, test_camera
         reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
         mean = reproj_dis_list.mean()
         std = reproj_dis_list.std()
-        within_3sigma = (reproj_dis_list >= mean - 3 * std) & (reproj_dis_list <= mean + 3 * std)
-        reproj_dis_list = reproj_dis_list[within_3sigma]    # 删除垃圾点
+        within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
+        reproj_dis_list = reproj_dis_list[within_3sigma]  # 删除垃圾点
 
         loss = 1e4 * (1 - torch.norm(q_pred)) ** 2 + torch.mean(reproj_dis_list)
 
@@ -347,13 +372,15 @@ def optimize_reproject(matches_3d_multi_view, rt_matrixs_multi_view, test_camera
         first_qt = qt_pred_for_vis_frame.pop(0)
         last_qt = qt_pred_for_vis_frame.pop()
         step = len(qt_pred_for_vis_frame) // 25
-        qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i*step] for i in range(25)]
+        qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i * step] for i in range(25)]
         qt_pred_for_vis_frame.insert(0, first_qt)
         qt_pred_for_vis_frame.append(last_qt)
         qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
     end_time = time.time()
     print("Time", end_time - start_time)
     return q_pred, t_pred
+
+
 
 def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
     dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
