@@ -266,16 +266,15 @@ def main(
             with open(f'vis_results/layer{feat_layer}_seq{S}/{global_step}_10views.pkl','wb') as f:
                 pickle.dump(vis_dict,f)
 
-
-
     q_preds = torch.stack(q_preds,dim=0)
     t_preds = torch.stack(t_preds, dim=0)
     gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
     r_errors,t_errors = compute_results(q_preds, t_preds,gt_poses_for_result)
-    results = np.concatenate(([r_errors],[t_errors]),axis=0)
+    results = torch.cat([q_preds,t_preds,gt_poses_for_result.reshape(-1,16)],dim=1)
+    results = np.array(results.cpu().detach())      # 1024,4+3+16
     if not os.path.exists(f'results'):
         os.makedirs(f'results')
-    np.savetxt(f'results/layer{feat_layer}_seq{S}_refine_mode{refine_mode}.txt',results)
+    np.savetxt(f'results/layer{feat_layer}_seq{S}.txt',results)
 
     # num_samples = len(r_errors)
     # r_errors = np.array(r_errors)
