@@ -274,7 +274,7 @@ def main(
     results = np.array(results.cpu().detach())      # 1024,4+3+16
     if not os.path.exists(f'results'):
         os.makedirs(f'results')
-    np.savetxt(f'results/layer{feat_layer}_seq{S}.txt',results)
+    np.savetxt(f'results/layer{feat_layer}_seq{S}_refine{refine_mode}.txt',results)
 
     # num_samples = len(r_errors)
     # r_errors = np.array(r_errors)
