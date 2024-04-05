@@ -145,7 +145,7 @@ def main(
         max_iters=32,
         log_freq=1,
         device_ids=[2],
-        record_vis = False
+        record_vis=True
 ):
     
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
@@ -195,8 +195,7 @@ def main(
                             device=device)
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
-    while global_step < max_iters: 
-        print("Iteration {}".format(global_step))
+    while global_step < max_iters:
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
 
@@ -224,6 +223,7 @@ def main(
         else:
             print('sampling failed')
         qt_pred_for_vis_seq = []
+        print("Iteration {}".format(global_step))
         for view_id in range(S):      # seq中的每一个view，都算一遍结果，从而得到整个数据集所有view的统计结果
             views_idx_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S // 4,start_idx=view_id)   # 对于当前view，用fps选出几个用来辅助优化的view
 
@@ -240,7 +240,7 @@ def main(
             iter_time = time.time()-iter_start_time
             if not os.path.exists(f'vis_results/layer{feat_layer}_seq{S}'):
                 os.makedirs(f'vis_results/layer{feat_layer}_seq{S}')
-            with open(f'vis_results/layer{feat_layer}_seq{S}/{global_step}.pkl','wb') as f:
+            with open(f'vis_results/layer{feat_layer}_seq{S}/{global_step}_10views.pkl','wb') as f:
                 pickle.dump(vis_dict,f)
 
 
@@ -248,26 +248,13 @@ def main(
     q_preds = torch.stack(q_preds,dim=0)
     t_preds = torch.stack(t_preds, dim=0)
     gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
-    compute_results(q_preds, t_preds,gt_poses_for_result,feat_layer,S)
+    r_errors,t_errors = compute_results(q_preds, t_preds,gt_poses_for_result)
+    results = torch.cat([q_preds,t_preds,gt_poses_for_result.reshape(-1,16)],dim=1)
+    results = np.array(results.cpu().detach())      # 1024,4+3+16
+    if not os.path.exists(f'results'):
+        os.makedirs(f'results')
+    np.savetxt(f'results/layer{feat_layer}_seq{S}.txt',results)
 
-    # num_samples = len(r_errors)
-    # r_errors = np.array(r_errors)
-    # t_errors = np.array(t_errors)
-
-    thresholds = [
-        (5, 2),
-        (5, 5),
-        (10, 2),
-        (10, 5),
-        (10, 10)
-    ]
-
-    # print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
-    #
-    # for r_thres, t_thres in thresholds:
-    #     good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
-    #     acc = (good_samples / num_samples) * 100.0
-    #     print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
 
     writer_t.close()
@@ -301,7 +288,7 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred
     loss_change = 1
     loss_last = 0
     qt_pred_for_vis_frame = []
-    while iteration < 200 and abs(loss_change) > 1e-4:
+    while iteration < 400 and abs(loss_change) > 1e-4:
         qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
         optimizer.zero_grad()
         reproj_dis_list = []
@@ -365,7 +352,7 @@ def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
 
     return select_views
 
-def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
+def compute_results(q_preds,t_preds,gt_poses):
     r_preds = quaternion_to_matrix(q_preds) # n.3.3
 
     rt_preds = torch.zeros_like(gt_poses)   # n,4,4
@@ -407,9 +394,7 @@ def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
         (10, 5),
         (10, 10)
     ]
-    result = f'layer{feat_layer},seq{S}\n'
-    result += "Average R_error: %.2f Average T_error: %.2f\n" % (np.mean(r_errors), np.mean(t_errors))
-    result += "Median R_error: %.2f Median T_error: %.2f\n" % (np.median(r_errors), np.median(t_errors))
+
     print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
     print("Median R_error: %.2f Median T_error: %.2f" % (np.median(r_errors), np.median(t_errors)))
 
@@ -417,6 +402,6 @@ def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
         good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
         acc = (good_samples / num_samples) * 100.0
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
-        result += "%.1f degree %.1f cm threshold: %.2f\n" % (r_thres, t_thres, acc)
+    return r_errors,t_errors
 if __name__ == '__main__':
     Fire(main)
