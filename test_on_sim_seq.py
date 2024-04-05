@@ -76,9 +76,18 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, s
             matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
             rt_matrix_multi_view.append(rt_matrix)
 
+        # 10个views都用（可能有重复），选inlier最多的rt_matrix
+        n = 0
+        select_id = 0
+        for idx in range(len(matches_3d_multi_view)):
+            if matches_3d_multi_view[idx].shape[0] > n:
+                n = matches_3d_multi_view[idx].shape[0]
+                select_id = idx
 
-        matches_3ds.append(matches_3d_multi_view)
-        rt_matrixs.append(rt_matrix_multi_view)
+
+
+        matches_3ds.append(torch.cat(matches_3d_multi_view,dim=0))
+        rt_matrixs.append(rt_matrix_multi_view[select_id])
         test_camera_Ks.append(test_camera_K)
         gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
         gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
@@ -287,43 +296,6 @@ def optimize_reproject(matches_3d_multi_view, rt_matrixs_multi_view, test_camera
     '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape'''
-
-    # 先取重投影误差最小的view
-
-    rt_matrixs_multi_view = torch.tensor(rt_matrixs_multi_view, device=device, dtype=dtype)  # b,v,4,4
-    test_camera_Ks = torch.tensor(test_camera_Ks, device=device, dtype=dtype)  # b,v,3,3
-    gt_poses = torch.tensor(gt_poses, device=device, dtype=dtype)  # b,v,4,4
-    q_pred_multi_view = []
-    t_pred_multi_view = []
-    for view_id in range(len(matches_3d_multi_view[0])):
-        q_relative_list,t_relative_list = [],[]
-        for frame_id in range(len(matches_3d_multi_view)):
-        # 用所有初值相对于当前优化帧的姿势取平均
-            rt_relative = rt_matrixs_multi_view[frame_id][view_id]@(gt_poses[frame_id])@torch.inverse(gt_poses[0])
-            q_relative = matrix_to_quaternion(rt_relative[:3,:3])
-            q_relative_list.append(q_relative)
-            t_relative = rt_relative[:3,3]
-            t_relative_list.append(t_relative)
-        q_relative_avg = torch.mean(torch.stack(q_relative_list),dim=0)
-        t_relative_avg = torch.mean(torch.stack(t_relative_list), dim=0)
-        q_pred_perview = torch.tensor(q_relative_avg/torch.norm(q_relative_avg),device=device,requires_grad=True)
-        t_pred_perview = torch.tensor(t_relative_avg,device=device,requires_grad=True)
-        q_pred_multi_view.append(q_pred_perview)
-        t_pred_multi_view.append(t_pred_perview)
-
-    # 计算各view重投影误差
-    errors = []
-    for i,q_pred_perview in enumerate(q_pred_multi_view):
-        t_pred_perview = t_pred_multi_view[i]
-        pred_3d = quaternion_apply(q_pred_perview, matches_3d_multi_view[0][i][:, 3:]) + t_pred_perview
-        proj_2d = (torch.matmul(test_camera_Ks[0], pred_3d.transpose(1, 0)) / pred_3d.transpose(1, 0)[2,:]).transpose(1, 0)[:, :2]
-        error = torch.mean(torch.norm(matches_3d_multi_view[0][i][:, 1:3] - proj_2d, dim=1))
-        errors.append(error)
-    errors = torch.stack(errors, dim=0)
-    _,idx = torch.sort(errors, dim=0)
-    q_pred = q_pred_multi_view[idx[0]]
-    t_pred = t_pred_multi_view[idx[0]]
-    matches_3ds = [matches_3d_multi_view[i][idx[0]] for i in range(len(matches_3d_multi_view))]
 
 
 
