@@ -409,7 +409,7 @@ class Dinov2Matcher:
         batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
-        N_select = 1
+        N_select = 10
         selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs,n=N_select).reshape(N_select)    # b,10 -> 10  TODO 现在只能batch=1
         
         ref_features = self.ref_features.permute(0, 2, 3, 1)
