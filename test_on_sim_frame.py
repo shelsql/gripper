@@ -82,6 +82,12 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         gt_poses.append(gt_pose)
         R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
         T1 = gt_obj_to_cam[:3, 3]
+        
+        flip_180 = np.array([[-1,0,0],
+                             [0,-1,0],
+                             [0,0,1]])
+        flipped_R = np.dot(gt_obj_to_cam[:3,:3], flip_180)
+        R1_flipped = flipped_R/np.cbrt(np.linalg.det(flipped_R))
 
         R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
         T2 = rt_matrix[:3, 3]
@@ -89,8 +95,12 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
         R = R1 @ R2.transpose()
         theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
         shift = np.linalg.norm(T1-T2) * 100
+        
+        R_flip = R1_flipped @ R2.transpose()
+        theta_flip = np.arccos((np.trace(R_flip) - 1)/2) * 180/np.pi
 
         #theta = min(theta, np.abs(180 - theta))
+        theta = min(theta, theta_flip)
         raw_r_errors.append(theta)
         raw_t_errors.append(shift)
         print("R_error: %.2f T_error: %.2f time:%.2f" % (theta, shift, time.time() - start_time))

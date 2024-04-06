@@ -190,9 +190,9 @@ class Dinov2Matcher:
         cam_space_coords = torch.stack([cam_space_x, cam_space_y, cam_space_z], axis = 1) # N, 3
         
         c2os = c2os[coords[:, 0].int()]
-        print("c2os:", c2os.shape)
+        #print("c2os:", c2os.shape)
         obj_space_coords = transform_batch_pointcloud_torch(cam_space_coords, c2os)
-        print(obj_space_coords.shape)
+        #print(obj_space_coords.shape)
         
         ref_ids = coords[:,0:1]
         ids_and_coords_3d = torch.concat([ref_ids, obj_space_coords], axis = 1)
@@ -455,7 +455,7 @@ class Dinov2Matcher:
         match_2d_coords = test_2d_coords[good_matches]
         match_3d_coords = ref_3d_coords[max_inds,1:]
         matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
-        self.vis_3d_matches(images, matches_3d, selected_refs, step)
+        #self.vis_3d_matches(images, matches_3d, selected_refs, step)
         #print(matches_3d.shape)
         return matches_3d
     
