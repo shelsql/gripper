@@ -24,24 +24,39 @@ class MemoryPool():
         self.test_camera_Ks.insert(0,frame['test_camera_K'])
         self.gt_poses.insert(0,frame['gt_pose'])
 
-        # 从内存池中fps挑选k帧出来辅助优化，顺便给这k帧也细化一下
+        # 从内存池中fps挑选k帧出来辅助优化
         key_ids = fps_optimize_views_from_test(np.array(self.gt_poses),
                                                select_numbers=min(len(self.gt_poses), self.key_number),
                                                start_idx=0)
-        for frame_id in key_ids:
+        if len(self.matches_3ds)<self.key_number:   # 当内存池不足key_number帧时，把其他关键帧也优化一下
+            for frame_id in key_ids:
+                views_idx_for_opt = fps_optimize_views_from_test(np.array(self.gt_poses),
+                                                                 select_numbers=len(key_ids),
+                                                                 start_idx=frame_id)
+                q_pred, t_pred = optimize_reproject([self.matches_3ds[i] for i in views_idx_for_opt],
+                                                    [self.rt_matrixs[i] for i in views_idx_for_opt],
+                                                    [self.test_camera_Ks[i] for i in views_idx_for_opt],
+                                                    [self.gt_poses[i] for i in views_idx_for_opt])
+                r_pred = quaternion_to_matrix(q_pred)
+                rt_pred = np.zeros((4,4))
+                rt_pred[:3,:3] = r_pred.cpu().detach().numpy()
+                rt_pred[:3, 3] = t_pred.cpu().detach().numpy()
+                rt_pred[3, 3] = 1
+                self.rt_matrixs[frame_id] = rt_pred
+        else:
             views_idx_for_opt = fps_optimize_views_from_test(np.array(self.gt_poses),
                                                              select_numbers=len(key_ids),
-                                                             start_idx=frame_id)
+                                                             start_idx=0)
             q_pred, t_pred = optimize_reproject([self.matches_3ds[i] for i in views_idx_for_opt],
                                                 [self.rt_matrixs[i] for i in views_idx_for_opt],
                                                 [self.test_camera_Ks[i] for i in views_idx_for_opt],
                                                 [self.gt_poses[i] for i in views_idx_for_opt])
             r_pred = quaternion_to_matrix(q_pred)
-            rt_pred = np.zeros((4,4))
-            rt_pred[:3,:3] = r_pred.cpu().detach().numpy()
+            rt_pred = np.zeros((4, 4))
+            rt_pred[:3, :3] = r_pred.cpu().detach().numpy()
             rt_pred[:3, 3] = t_pred.cpu().detach().numpy()
             rt_pred[3, 3] = 1
-            self.rt_matrixs[frame_id] = rt_pred
+            self.rt_matrixs[0] = rt_pred
 
         # 如果内存池已满，则删除其中一帧
         # 以gt_pose中的旋转为依据
@@ -72,8 +87,8 @@ def main(
         max_iters=1024,
         device_ids=[2],
         refine_mode='a',
-        max_memory=20,
-        key_number=6
+        max_memory=50,
+        key_number=10
 ):
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
     device = 'cuda:%d' % device_ids[0]
