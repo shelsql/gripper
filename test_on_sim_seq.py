@@ -310,7 +310,7 @@ def main(
     writer_t.close()
 from utils.quaternion_utils import *
 
-def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred_for_vis_seq):
+def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred_for_vis_seq=None):
     '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助'''
     # matches_3ds: list[tensor(342,6),...] different shape
     # other: list[np.array(4,4)or(3,3)], same shape
@@ -374,15 +374,16 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred
         loss_change = loss - loss_last
         loss_last = loss
         iteration += 1
-    # 每次只挑30帧左右可视化
-    if len(qt_pred_for_vis_frame) > 27:
-        first_qt = qt_pred_for_vis_frame.pop(0)
-        last_qt = qt_pred_for_vis_frame.pop()
-        step = len(qt_pred_for_vis_frame) // 25
-        qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i*step] for i in range(25)]
-        qt_pred_for_vis_frame.insert(0, first_qt)
-        qt_pred_for_vis_frame.append(last_qt)
-        qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
+    if qt_pred_for_vis_seq is not None:
+        # 每次只挑30帧左右可视化
+        if len(qt_pred_for_vis_frame) > 27:
+            first_qt = qt_pred_for_vis_frame.pop(0)
+            last_qt = qt_pred_for_vis_frame.pop()
+            step = len(qt_pred_for_vis_frame) // 25
+            qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i*step] for i in range(25)]
+            qt_pred_for_vis_frame.insert(0, first_qt)
+            qt_pred_for_vis_frame.append(last_qt)
+            qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
     end_time = time.time()
     print("Time", end_time - start_time)
     return q_pred, t_pred
