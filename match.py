@@ -212,7 +212,6 @@ def main(
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
     while global_step < max_iters: # Num of test images
-        print("Iteration {}".format(global_step))
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
 
@@ -252,6 +251,7 @@ def main(
 
         else:
             print('sampling failed')
+        print("Iteration {}".format(global_step))
         q_pred,t_pred = optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses)
         q_preds.append(q_pred)
         t_preds.append(t_pred)

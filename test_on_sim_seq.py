@@ -28,7 +28,7 @@ np.random.seed(123)
 torch.manual_seed(123)
 
 
-def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, sw=None):
+def run_model(d, refs, pointcloud, matcher, device, dname, refine_mode,step,vis_dict=None, sw=None,):
     metrics = {}
     rgbs = torch.Tensor(d['rgb'])[0].float().permute(0, 3, 1, 2).to(device) # B, C, H, W
     depths = torch.Tensor(d['depth'])[0].float().permute(0, 3, 1, 2).to(device)
@@ -61,21 +61,53 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, s
             'feat': d['feat'][0,i:i+1],
             'intrinsics': d['intrinsics']
         }
-        matches_3d = matcher.match_batch(frame, i)  # N, 6i
+        matches_3d_list = matcher.match_batch(frame, step=i,N_select=10,refine_mode=refine_mode)  # N, 6i
         #print(matches_3d[::10])
-        if matches_3d is None:
-            print("No matches")
-            rt_matrix = np.eye(4)
-            continue
-        matches = matches_3d    # 这样写是对的，不用clone
-        matches[:,[1,2]] = matches[:,[2,1]]
-        #print(matches)
-        #save_pointcloud(matches[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
-        pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
-        #pnp_retval, translation, rt_matrix = solve_pnp_ransac(pts_3d, pts_2d[:,::-1].astype(float), camera_K=test_camera_K)
+        # if matches_3d is None:
+        #     print("No matches")
+        #     rt_matrix = np.eye(4)
+        #     continue
+        if refine_mode == 'a':
+            matches_3d_multi_view = []
+            rt_matrix_multi_view = []
+            for matches_3d in matches_3d_list:
+                matches = matches_3d    # 这样写是对的，不用clone
+                matches[:,[1,2]] = matches[:,[2,1]]
+                pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:,3:6].cpu().numpy(), matches[:,1:3].cpu().numpy(), camera_K=test_camera_K)
+                if inlier is not None:
+                    matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
+                    rt_matrix_multi_view.append(rt_matrix)
 
-        matches_3ds.append(matches_3d[inlier.reshape(-1)])
-        rt_matrixs.append(rt_matrix)
+            # 10个views都用（可能有重复），选inlier最多的rt_matrix
+            n = 0
+            select_id = 0
+            for idx in range(len(matches_3d_multi_view)):
+                if matches_3d_multi_view[idx].shape[0] > n:
+                    n = matches_3d_multi_view[idx].shape[0]
+                    select_id = idx
+            matches_3ds.append(torch.cat(matches_3d_multi_view,dim=0))
+            rt_matrixs.append(rt_matrix_multi_view[select_id])
+
+        elif refine_mode == 'b':
+            matches_3d = torch.cat(matches_3d_list,dim=0)
+            matches = matches_3d
+            matches[:, [1, 2]] = matches[:, [2, 1]]
+            pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:, 3:6].cpu().numpy(),
+                                                                          matches[:, 1:3].cpu().numpy(),
+                                                                          camera_K=test_camera_K)
+            matches_3ds.append(matches_3d[inlier.reshape(-1)])
+            rt_matrixs.append(rt_matrix)
+
+        elif refine_mode == 'c':
+            matches_3d = matches_3d_list[0]
+            matches = matches_3d
+            matches[:,[1,2]] = matches[:,[2,1]]
+            pnp_retval, translation, rt_matrix, inlier = solve_pnp_ransac(matches[:, 3:6].cpu().numpy(),
+                                                                      matches[:, 1:3].cpu().numpy(),
+                                                                      camera_K=test_camera_K)
+            matches_3ds.append(matches_3d[inlier.reshape(-1)])
+            rt_matrixs.append(rt_matrix)
+
         test_camera_Ks.append(test_camera_K)
         gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
         gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
@@ -83,51 +115,51 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step,vis_dict=None, s
         gt_poses.append(gt_pose)
 
         #print("pnp_retval:", pnp_retval)
-        if not pnp_retval:
-            print("No PnP result")
-            rt_matrix = np.eye(4)
+        # if not pnp_retval:
+        #     print("No PnP result")
+        #     rt_matrix = np.eye(4)
             
 
-        R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
-        T1 = gt_obj_to_cam[:3, 3]
-
-        R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
-        T2 = rt_matrix[:3, 3]
-
-        R = R1 @ R2.transpose()
-        theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
-        shift = np.linalg.norm(T1-T2) * 100
-
-        theta = min(theta, np.abs(180 - theta))
-        raw_r_errors.append(theta)
-        raw_t_errors.append(shift)
-        print("R_error: %.2f T_error: %.2f time:%.2f" % (theta, shift, time.time() - start_time))
-
-    raw_r_errors = np.array(raw_r_errors)
-    raw_t_errors = np.array(raw_t_errors)
-    print("Single frame metrics,without optimization")
-    print("Average R error: %.2f Average T error: %.2f" % (np.mean(raw_r_errors), np.mean(raw_t_errors)))
-    #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")    
-
-    thresholds = [
-        (5, 2),
-        (5, 5),
-        (10, 2),
-        (10, 5),
-        (10, 10)
-    ]
-    for r_thres, t_thres in thresholds:
-        good_samples = np.sum(np.logical_and(raw_r_errors < r_thres, raw_t_errors < t_thres))
-        acc = (good_samples / S) * 100.0
-        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
+    #     R1 = gt_obj_to_cam[:3, :3]/np.cbrt(np.linalg.det(gt_obj_to_cam[:3, :3]))
+    #     T1 = gt_obj_to_cam[:3, 3]
+    #
+    #     R2 = rt_matrix[:3, :3]/np.cbrt(np.linalg.det(rt_matrix[:3, :3]))
+    #     T2 = rt_matrix[:3, 3]
+    #
+    #     R = R1 @ R2.transpose()
+    #     theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+    #     shift = np.linalg.norm(T1-T2) * 100
+    #
+    #     theta = min(theta, np.abs(180 - theta))
+    #     raw_r_errors.append(theta)
+    #     raw_t_errors.append(shift)
+    #     print("R_error: %.2f T_error: %.2f time:%.2f" % (theta, shift, time.time() - start_time))
+    #
+    # raw_r_errors = np.array(raw_r_errors)
+    # raw_t_errors = np.array(raw_t_errors)
+    # print("Single frame metrics,without optimization")
+    # print("Average R error: %.2f Average T error: %.2f" % (np.mean(raw_r_errors), np.mean(raw_t_errors)))
+    # #save_pointcloud(matches_3d[:,3:].cpu().numpy(), "./pointclouds/matched_3d_pts.txt")
+    #
+    # thresholds = [
+    #     (5, 2),
+    #     (5, 5),
+    #     (10, 2),
+    #     (10, 5),
+    #     (10, 10)
+    # ]
+    # for r_thres, t_thres in thresholds:
+    #     good_samples = np.sum(np.logical_and(raw_r_errors < r_thres, raw_t_errors < t_thres))
+    #     acc = (good_samples / S) * 100.0
+    #     print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
     gt_poses = np.array(gt_poses)
-    if vis_dict != None:
-        vis_dict['rgbs'] = np.array(rgbs.cpu()).tolist()
-        vis_dict['gt_poses'] = np.stack(gt_poses).tolist()
-        vis_dict['matches_3ds'] = [tmp.tolist() for tmp in matches_3ds]
+    # if vis_dict != None:
+    #     vis_dict['rgbs'] = np.array(rgbs.cpu()).tolist()
+    #     vis_dict['gt_poses'] = np.stack(gt_poses).tolist()
+    #     vis_dict['matches_3ds'] = [tmp.tolist() for tmp in matches_3ds]
 
-    return matches_3ds,rt_matrixs,test_camera_Ks,gt_poses
+    return matches_3ds,np.stack(rt_matrixs,axis=0),test_camera_Ks,gt_poses
 
 def main(
         dname='sim',
@@ -142,10 +174,11 @@ def main(
         test_dir='/root/autodl-tmp/shiqian/code/gripper/test_views/franka_69.4_1024',
         optimize=False,
         feat_layer=19, # Which layer of features from dinov2 to take
-        max_iters=32,
+        max_iters=1,
         log_freq=1,
         device_ids=[2],
-        record_vis = False
+        record_vis=False,
+        refine_mode='a'
 ):
     
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
@@ -195,8 +228,7 @@ def main(
                             device=device)
 
     q_preds,t_preds,gt_poses_for_result = [],[],[]
-    while global_step < max_iters: 
-        print("Iteration {}".format(global_step))
+    while global_step < max_iters:
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], []
         global_step += 1
 
@@ -220,10 +252,11 @@ def main(
         else:
             vis_dict = None
         if sample is not None:
-            matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, global_step, vis_dict,sw=sw_t)
+            matches_3ds,rt_matrixs,test_camera_Ks,gt_poses = run_model(sample, refs, gripper_pointcloud, matcher, device, dname, refine_mode,global_step, vis_dict,sw=sw_t)
         else:
             print('sampling failed')
         qt_pred_for_vis_seq = []
+        print("Iteration {}".format(global_step))
         for view_id in range(S):      # seq中的每一个view，都算一遍结果，从而得到整个数据集所有view的统计结果
             views_idx_for_opt = fps_optimize_views_from_test(gt_poses, select_numbers=S // 4,start_idx=view_id)   # 对于当前view，用fps选出几个用来辅助优化的view
 
@@ -240,15 +273,19 @@ def main(
             iter_time = time.time()-iter_start_time
             if not os.path.exists(f'vis_results/layer{feat_layer}_seq{S}'):
                 os.makedirs(f'vis_results/layer{feat_layer}_seq{S}')
-            with open(f'vis_results/layer{feat_layer}_seq{S}/{global_step}.pkl','wb') as f:
+            with open(f'vis_results/layer{feat_layer}_seq{S}/{global_step}_10views.pkl','wb') as f:
                 pickle.dump(vis_dict,f)
-
-
 
     q_preds = torch.stack(q_preds,dim=0)
     t_preds = torch.stack(t_preds, dim=0)
     gt_poses_for_result = torch.tensor(np.stack(gt_poses_for_result,axis=0),device=device)
-    compute_results(q_preds, t_preds,gt_poses_for_result,feat_layer,S)
+    r_errors,t_errors = compute_results(q_preds, t_preds,gt_poses_for_result)
+    results = torch.cat([q_preds,t_preds,gt_poses_for_result.reshape(-1,16)],dim=1)
+    results = np.array(results.cpu().detach())      # 1024,4+3+16
+    if not os.path.exists(f'results'):
+        os.makedirs(f'results')
+    if max_iters == 32:
+        np.savetxt(f'results/layer{feat_layer}_seq{S}_refine{refine_mode}.txt',results)
 
     # num_samples = len(r_errors)
     # r_errors = np.array(r_errors)
@@ -301,7 +338,7 @@ def optimize_reproject(matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,qt_pred
     loss_change = 1
     loss_last = 0
     qt_pred_for_vis_frame = []
-    while iteration < 200 and abs(loss_change) > 1e-4:
+    while iteration < 400 and abs(loss_change) > 1e-4:
         qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
         optimizer.zero_grad()
         reproj_dis_list = []
@@ -365,7 +402,7 @@ def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
 
     return select_views
 
-def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
+def compute_results(q_preds,t_preds,gt_poses):
     r_preds = quaternion_to_matrix(q_preds) # n.3.3
 
     rt_preds = torch.zeros_like(gt_poses)   # n,4,4
@@ -407,9 +444,7 @@ def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
         (10, 5),
         (10, 10)
     ]
-    result = f'layer{feat_layer},seq{S}\n'
-    result += "Average R_error: %.2f Average T_error: %.2f\n" % (np.mean(r_errors), np.mean(t_errors))
-    result += "Median R_error: %.2f Median T_error: %.2f\n" % (np.median(r_errors), np.median(t_errors))
+
     print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
     print("Median R_error: %.2f Median T_error: %.2f" % (np.median(r_errors), np.median(t_errors)))
 
@@ -417,6 +452,6 @@ def compute_results(q_preds,t_preds,gt_poses,feat_layer,S):
         good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
         acc = (good_samples / num_samples) * 100.0
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
-        result += "%.1f degree %.1f cm threshold: %.2f\n" % (r_thres, t_thres, acc)
+    return r_errors,t_errors
 if __name__ == '__main__':
     Fire(main)
