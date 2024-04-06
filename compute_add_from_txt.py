@@ -13,7 +13,7 @@ from itertools import combinations
 
 feat_layer = 19
 S = 32
-results = np.loadtxt(f'results/layer{feat_layer}_seq{S}_refine_modea.txt')   # 1024,23
+results = np.loadtxt(f'results/layer{feat_layer}_seq{S}_refinea.txt')   # 1024,23
 q_preds = results[:,:4]     # 1024,4
 t_preds = results[:,4:7]    # 1024,3
 gt_poses = results[:,7:].reshape(-1,4,4)    # 1024,4,4
@@ -30,6 +30,6 @@ for i in range(len(q_preds)):
     y[mask] += 1/len(q_preds)
 
 area = np.trapz(y, x) / 0.1
-
+print(area)
 
 
