@@ -375,7 +375,7 @@ class Dinov2Matcher:
         #self.vis_3d_matches(images, matches, selected_refs)
         return matches
         
-    def match_batch(self, sample, step = 0):
+    def match_batch(self, sample, step=0, N_select=1,refine_mode='a'):
         rgbs = torch.Tensor(sample['rgb']).float().to(self.device) # B, C, H, W
         depths = torch.Tensor(sample['depth']).float().to(self.device)
         masks = torch.Tensor(sample['mask']).float().to(self.device)
@@ -409,56 +409,66 @@ class Dinov2Matcher:
         batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
-        N_select = 10
-        selected_refs = self.select_refs(features,batch_feat_masks,B,test_idxs,n=N_select).reshape(N_select)    # b,10 -> 10  TODO 现在只能batch=1
-        
-        ref_features = self.ref_features.permute(0, 2, 3, 1)
-        ref_features = ref_features[selected_refs].reshape(N_select*N_tokens, feat_C) # 32*N, C
-        cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
-        #cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
-        cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, N_select, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
-        
-        cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]  # N_batch_pts, Nref, 32, 32
 
-        #print("cosine sims max:", cosine_sims.max())
-        feat_masks = self.feat_masks[selected_refs]
-        cosine_sims = cosine_sims[:, feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
-        
-        ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
-        ref_idxs = ref_idxs[selected_refs]
-        ref_idxs = ref_idxs[feat_masks[:,0] > 0] # N_ref_pts, 3
-        #print(cosine_sims.shape)
-        
-        test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
-        ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
-        ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2os)
-        
-        ref_valid_idxs = torch.logical_and(ref_3d_coords[:,1]<10, ref_3d_coords[:,1]>-10)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]<10)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-10)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]<10)
-        ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]>-10)
-        
-        #ref_valid_idxs = torch.logical_and(ref_valid_idxs, cosine_sims)
-        
-        cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
-        ref_3d_coords = ref_3d_coords[ref_valid_idxs] # N_3d_ref_pts, 4
-        
-        #print(test_2d_coords.shape, ref_3d_coords.shape)
-        
-        max_sims, max_inds = torch.max(cosine_sims, axis = 1) 
-        good_matches = max_sims > self.threshold
-        if good_matches.sum() < 4:
-            print("Not enough good matches, lowering threshold")
-            good_matches = max_sims > (self.threshold - 0.1)
-        max_inds = max_inds[good_matches]
-        match_2d_coords = test_2d_coords[good_matches]
-        match_3d_coords = ref_3d_coords[max_inds,1:]
-        matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
-        self.vis_3d_matches(images, matches_3d, selected_refs, step)
+        matches_3d_list = []
+        selected_refs = self.select_refs(features, batch_feat_masks, B, test_idxs, n=N_select).reshape(-1)  # TODO 现在只能batch=1
+        if refine_mode == 'c':
+            selected_refs = selected_refs.unsqueeze(0)
+        for i,idx in enumerate(selected_refs):
+            seleced_refs_slice = selected_refs[i:i + 1]
+            length = 1
+            if refine_mode == 'c':
+                seleced_refs_slice = seleced_refs_slice[0]
+                length = N_select
+
+            ref_features = self.ref_features.permute(0, 2, 3, 1)
+            ref_features = ref_features[seleced_refs_slice].reshape(length*N_tokens, feat_C) # 32*N, C
+            cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
+            #cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
+            cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, length, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
+
+            cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]  # N_batch_pts, Nref, 32, 32
+
+            #print("cosine sims max:", cosine_sims.max())
+            feat_masks = self.feat_masks[seleced_refs_slice]
+            cosine_sims = cosine_sims[:, feat_masks[:,0] > 0]  # N_batch_pts, N_ref_pts
+
+            ref_idxs = create_3dmeshgrid(N_refs, feat_H, feat_W, self.device)
+            ref_idxs = ref_idxs[seleced_refs_slice]
+            ref_idxs = ref_idxs[feat_masks[:,0] > 0] # N_ref_pts, 3
+            #print(cosine_sims.shape)
+
+            test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
+            ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
+            ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2os)
+
+            ref_valid_idxs = torch.logical_and(ref_3d_coords[:,1]<10, ref_3d_coords[:,1]>-10)
+            ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]<10)
+            ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-10)
+            ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]<10)
+            ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]>-10)
+
+            #ref_valid_idxs = torch.logical_and(ref_valid_idxs, cosine_sims)
+
+            cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
+            ref_3d_coords = ref_3d_coords[ref_valid_idxs] # N_3d_ref_pts, 4
+
+            #print(test_2d_coords.shape, ref_3d_coords.shape)
+
+            max_sims, max_inds = torch.max(cosine_sims, axis = 1)
+            good_matches = max_sims > self.threshold
+            if good_matches.sum() < 4:
+                print("Not enough good matches, lowering threshold")
+                good_matches = max_sims > (self.threshold - 0.1)
+            max_inds = max_inds[good_matches]
+            match_2d_coords = test_2d_coords[good_matches]
+            match_3d_coords = ref_3d_coords[max_inds,1:]
+            matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
+            self.vis_3d_matches(images, matches_3d, seleced_refs_slice, step)
+            matches_3d_list.append(matches_3d)
         #print(matches_3d.shape)
-        return matches_3d
-    
+        return matches_3d_list
+
     def match_2d_to_3d(self, matches_2d):
         #TODO: Project 2D coords to gripper space using ref intrinsics
         # matches_2d: N, 6  batchno, coords, refno, coords
