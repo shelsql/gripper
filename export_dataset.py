@@ -26,59 +26,31 @@ def save_features(
     print("Saving features from layer %d to %s" % (layer, dataset_location))
     print("Using device %s" % device)
     rgb_paths = glob.glob(dataset_location + "/*png")
-    camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
-
 
     rgbs = []
-    depths = []
     masks = []
-    c2ws = []
-    obj_poses = []
-
-    camera_intrinsic = json.loads(open(camera_intrinsic_path).read())
-
     for glob_rgb_path in tqdm(rgb_paths):
-        path = glob_rgb_path[:-8]
+        path = glob_rgb_path[:-4]
 
-        rgb_path = path + "_rgb.png"
-        depth_path = path + "_depth1.exr"
-        mask_path = path + "_id1.exr"
-        c2w_path = path + "_c2w.npy"
-        obj_pose_path = path + "_objpose.npy"
+        rgb_path = path + ".png"
+        mask_path = path + "_mask.exr"
         
         #print(rgb_path)
         rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
-        depth = cv2.imread(depth_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
         mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
-        c2w = np.load(c2w_path)
-        obj_pose = np.load(obj_pose_path)
-        obj_pose = np.linalg.inv(obj_pose)
+        mask = (mask >= 9).astype(int)
         
         rgbs.append(rgb)
-        depths.append(depth)
         masks.append(mask)
-        c2ws.append(c2w)
-        obj_poses.append(obj_pose)
     rgbs = np.stack(rgbs, axis = 0)
-    depths = np.stack(depths, axis = 0)
     masks = np.stack(masks, axis = 0)
-    c2ws = np.stack(c2ws, axis = 0)
-    obj_poses = np.stack(obj_poses, axis = 0)
 
     #print(rgbs.shape, depths.shape, masks.shape, c2ws.shape, obj_poses.shape)
     rgbs = torch.tensor(rgbs).float().permute(0, 3, 1, 2) # N, 3, H, W
-    depths = torch.tensor(depths).float().permute(0, 3, 1, 2) # N, 1, H, W
     masks = torch.tensor(masks).float().permute(0, 3, 1, 2) # N, 1, H, W
-    c2ws = torch.tensor(c2ws).float() # N, 4, 4
-    w2os = torch.tensor(obj_poses).float()
-
-    cam_to_obj = torch.bmm(w2os, c2ws) # N, 4, 4
 
     N, C, H, W = rgbs.shape
     img_size = 448
-
-    print(cam_to_obj.shape)
-
 
     transform = transforms.Compose([
                 transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
@@ -86,6 +58,7 @@ def save_features(
 
     rgbs = rgbs / 255.0 # N, 3, H, W
     bboxes = get_2dbboxes(masks[:,0]) # B, 4
+    print(bboxes[:10])
     cropped_rgbs = torch.zeros((N, 3, img_size, img_size), device = device)
     cropped_masks = torch.zeros((N, 1, img_size, img_size), device = device)
     for b in range(N):
@@ -135,13 +108,13 @@ def save_features(
     print(all_tokens.shape)
     print("Saving features...")
     for i in tqdm(range(N)):
-        path = rgb_paths[i][:-8]
+        path = rgb_paths[i][:-4]
         feat_path = path + "_feats_%.2d.npy" % layer
         np.save(feat_path, all_tokens[i].cpu().numpy())
 
     #torch.save(data_dict, "./dataset_exports/ref_840.pth")
     #hkl.dump(data_dict, "./dataset_exports/ref_64.hkl")
-    
+'''
 layers = [11, 15]
 data_dirs = ["./ref_views/powerdrill_69.4_840",
                 "./ref_views/franka_69.4_840",
@@ -151,3 +124,6 @@ device = "cuda:0"
 for data_dir in data_dirs:
     for layer in layers:
         save_features(data_dir, layer, device)
+'''
+for data_dir in glob.glob("/root/autodl-tmp/shiqian/datasets/Ty_data/*"):
+    save_features(data_dir, 19, "cuda:1")
