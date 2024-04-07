@@ -24,9 +24,10 @@ torch.manual_seed(125)
 def run_model(d, refs, pointcloud, device, dname, sw=None):
     metrics = {}
     
-    rgbs = torch.Tensor(d['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
-    depths = torch.Tensor(d['depths']).float().permute(0, 1, 4, 2, 3)
-    masks = torch.Tensor(d['masks']).float().permute(0, 1, 4, 2, 3)
+    
+    rgbs = torch.Tensor(d['rgb']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
+    depths = torch.Tensor(d['depth']).float().permute(0, 1, 4, 2, 3)
+    masks = torch.Tensor(d['mask']).float().permute(0, 1, 4, 2, 3)
     #kptss = d['kptss']
     #npys = d['npys']
     #intrinsics = d['intrinsics']
@@ -148,9 +149,9 @@ def main(
     print('model_name', model_name)
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    vis_dataset = SimTrackDataset(dataset_location="./test_views/franka_69.4_64", seqlen=8, features=True)
+    vis_dataset = TrackingDataset(seqlen=8)
     #vis_dataset = 
-    ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=True)
+    ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=23)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)

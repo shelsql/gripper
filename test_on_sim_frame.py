@@ -136,7 +136,7 @@ def main(
         B=1, # batchsize
         S=32, # seqlen
         use_augs=False, # resizing/jittering/color/blur augs
-        shuffle=True, # dataset shuffling
+        shuffle=False, # dataset shuffling
         is_training=True,
         log_dir='./logs_match',
         ref_dir='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840',
@@ -167,6 +167,7 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
+    test_dataset = TrackingDataset(features=feat_layer)
     ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=feat_layer)
     test_dataloader = DataLoader(test_dataset, batch_size=B, shuffle=shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
