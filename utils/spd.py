@@ -96,6 +96,12 @@ def pairwise_distance(A, B):
 
     return C
 
+def pairwise_distances_torch(A, B):
+    diff = A.unsqueeze(1) - B.unsqueeze(0)
+    C = torch.sqrt(torch.sum(diff**2, dim=2))
+
+    return C
+
 
 def uniform_sample(vertices, faces, n_samples, with_normal=False):
     """ Sampling points according to the area of mesh surface.
