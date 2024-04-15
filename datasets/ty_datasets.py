@@ -54,6 +54,8 @@ class PoseDataset(Dataset):
         kpts = json.loads(open(kpts_path).read())
         npy = np.load(npy_path)
         
+        depth /= 1000.0
+        
         gripper_info = kpts[0]['keypoints'][8]
         gripper_t = torch.tensor(gripper_info["location_wrt_cam"]).numpy()
         gripper_r = torch.tensor(gripper_info["R2C_mat"]).numpy()
