@@ -154,10 +154,10 @@ def run_model(d, refs, pointcloud, matcher, device, dname, refine_mode,step,vis_
     #     print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
 
     gt_poses = np.array(gt_poses)
-    # if vis_dict != None:
-    #     vis_dict['rgbs'] = np.array(rgbs.cpu()).tolist()
-    #     vis_dict['gt_poses'] = np.stack(gt_poses).tolist()
-    #     vis_dict['matches_3ds'] = [tmp.tolist() for tmp in matches_3ds]
+    if vis_dict != None:
+        vis_dict['rgbs'] = np.array(rgbs.cpu()).tolist()
+        vis_dict['gt_poses'] = np.stack(gt_poses).tolist()
+        vis_dict['matches_3ds'] = [tmp.tolist() for tmp in matches_3ds]
 
     return matches_3ds,np.stack(rt_matrixs,axis=0),test_camera_Ks,gt_poses
 

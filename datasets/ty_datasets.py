@@ -85,7 +85,7 @@ class TrackingDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/datasets/Ty_data",
                  seqlen=32,
-                 strides=[1,2],
+                 strides=[1],
                  features=23
                  ):
         super().__init__()
@@ -190,7 +190,8 @@ class TrackingDataset(Dataset):
             "c2w": c2ws,
             "obj_pose": obj_poses,
             "feat": feats,
-            "intrinsics": camera_intrinsic
+            "intrinsics": camera_intrinsic,
+            "path":path
         }
         
         return sample
