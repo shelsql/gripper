@@ -780,7 +780,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_full_depth',default=True, action='store_true')
     parser.add_argument('--gripper_point_path', type=str, default="./pointclouds/gripper.txt")
     parser.add_argument('--add_noise',default=True, action='store_true')
-    parser.add_argument('--adjust',default=True, action='store_true')
+    parser.add_argument('--adjust',default=False, action='store_true')
 
     cfg = parser.parse_args()
     main(cfg)

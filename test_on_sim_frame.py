@@ -58,12 +58,9 @@ def run_model(d, refs, pointcloud, matcher, device, dname, step, sw=None):
             'feat': d['feat'][0,i:i+1],
             'intrinsics': d['intrinsics']
         }
-        matches_3d = matcher.match_batch(frame, i)  # N, 6i
+        matches_3d_list = matcher.match_batch(frame, i)  # N, 6i
         #print(matches_3d[::10])
-        if matches_3d is None:
-            print("No matches")
-            rt_matrix = np.eye(4)
-            continue
+        matches_3d = torch.cat(matches_3d_list, dim=0)
         matches = matches_3d
         matches[:,[1,2]] = matches[:,[2,1]]
         #print(matches)

@@ -9,6 +9,7 @@ import cv2
 from tqdm import tqdm
 import math
 import os
+import time
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
@@ -18,6 +19,12 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import KMeans
+
+def print_time(msg, last_time):
+    now_time = time.time()
+    print("%s .Time taken: %.2f" % (msg, now_time - last_time))
+    return now_time
+
 class Dinov2Matcher:
     def __init__(self, ref_dir, refs, model_pointcloud,
                  feat_layer,
@@ -376,6 +383,7 @@ class Dinov2Matcher:
         return matches
         
     def match_batch(self, sample, step=0, N_select=1,refine_mode='a'):
+        timestamp = time.time()
         rgbs = torch.Tensor(sample['rgb']).float().to(self.device) # B, C, H, W
         depths = torch.Tensor(sample['depth']).float().to(self.device)
         masks = torch.Tensor(sample['mask']).float().to(self.device)
@@ -394,6 +402,7 @@ class Dinov2Matcher:
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
         assert(feat_H == feat_W)
         feat_size = feat_H
+        #timestamp = print_time("Load data", timestamp)
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
         if sample['feat'] is None:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
@@ -409,9 +418,11 @@ class Dinov2Matcher:
         batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
         test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
         test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts, 3
+        #timestamp = print_time("Prepare data", timestamp)
 
         matches_3d_list = []
         selected_refs = self.select_refs(features, batch_feat_masks, B, test_idxs, n=N_select).reshape(-1)  # TODO 现在只能batch=1
+        #timestamp = print_time("Select refs", timestamp)
         if refine_mode == 'c':
             selected_refs = selected_refs.unsqueeze(0)
         for i,idx in enumerate(selected_refs):
@@ -425,6 +436,7 @@ class Dinov2Matcher:
             ref_features = ref_features[seleced_refs_slice].reshape(length*N_tokens, feat_C) # 32*N, C
             cosine_sims = pairwise_cosine_similarity(features, ref_features) # B*N, 32*N
             #cosine_sims = cosine_sims.reshape(B, N_tokens, N_refs, N_tokens) # B, 1024, 32, 1024
+            #timestamp = print_time("Calculate corrs", timestamp)
             cosine_sims = cosine_sims.reshape(B, feat_H, feat_W, length, feat_H, feat_W) # B, 32, 32, Nref, 32, 32
 
             cosine_sims = cosine_sims[batch_feat_masks[:,0] > 0]  # N_batch_pts, Nref, 32, 32
@@ -437,7 +449,7 @@ class Dinov2Matcher:
             ref_idxs = ref_idxs[seleced_refs_slice]
             ref_idxs = ref_idxs[feat_masks[:,0] > 0] # N_ref_pts, 3
             #print(cosine_sims.shape)
-
+            #timestamp = print_time("Some filtering", timestamp)
             test_2d_coords = self.idx_to_2d_coords(test_idxs, bboxes) # N_test_2d_pts, 3
             ref_2d_coords = self.idx_to_2d_coords(ref_idxs, self.ref_bboxes)
             ref_3d_coords = self.coords_2d_to_3d(ref_2d_coords, self.ref_images[:,3], self.ref_intrinsics, self.ref_c2os)
@@ -447,7 +459,7 @@ class Dinov2Matcher:
             ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,2]>-10)
             ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]<10)
             ref_valid_idxs = torch.logical_and(ref_valid_idxs, ref_3d_coords[:,3]>-10)
-
+            #timestamp = print_time("Calculate coords", timestamp)
             #ref_valid_idxs = torch.logical_and(ref_valid_idxs, cosine_sims)
 
             cosine_sims = cosine_sims[:, ref_valid_idxs] # N_test_2d_pts, N_3d_ref_pts
@@ -464,8 +476,9 @@ class Dinov2Matcher:
             match_2d_coords = test_2d_coords[good_matches]
             match_3d_coords = ref_3d_coords[max_inds,1:]
             matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
-            self.vis_3d_matches(images, matches_3d, seleced_refs_slice, step)
+            #self.vis_3d_matches(images, matches_3d, seleced_refs_slice, step)
             matches_3d_list.append(matches_3d)
+            #timestamp = print_time("Choose matches", timestamp)
         #print(matches_3d.shape)
         return matches_3d_list
 
@@ -749,19 +762,44 @@ class Dinov2Matcher:
 
     def select_refs(self,features,batch_feat_mask,b,test_idxs, n):
         # B*N,C
-        features = features.reshape(b,32,32,-1)[batch_feat_mask[:,0]>0] # n_test_2d_pts(381), C
+        features = features.reshape(32,32,-1)[batch_feat_mask[0,0]>0] # n_test_2d_pts(381), C
         descriptors_centers_dis = pairwise_euclidean_distance(features, torch.tensor(self.vision_word_list, device=self.device)) # 381，2048
         sorted_dis, sorted_indices = torch.sort(descriptors_centers_dis, dim=1)
-        test_bags = torch.zeros(b,2048).to(self.device)
+        test_bags = torch.zeros(2048, device = self.device)
+        test_bags_2 = torch.zeros(2048, device = self.device)
         n_test_pts = features.shape[0]
 
         test_img_ids = test_idxs[:,0]
 
+        # Method 1
+        '''
         for i in range(n_test_pts):
             for j in range(3):
                 indice = sorted_indices[i,j]
                 dis = torch.exp(-(sorted_dis[i,j]**2)/200)
-                test_bags[test_img_ids[i],indice] += dis
+                test_bags[indice] += dis
+        '''
+                
+        
+        for j in range(3):
+            indices = sorted_indices[:,j]
+            dis = torch.exp(-(sorted_dis[:,j]**2)/200)
+            #for i in range(n_test_pts):
+                #test_bags_2[indices[i]] += dis[i]
+            test_bags.index_add_(0, indices, dis)
+        test_bags = test_bags.unsqueeze(0)
+        '''
+        # Method 2    
+        for j in range(3):
+            indices = sorted_indices[:,j]
+            #print(indices)
+            dis = torch.exp(-(sorted_dis[:,j]**2)/200)
+            #test_bags_2[indices] += dis
+            test_bags_2.scatter_add(0, indices, dis)
+        '''
+            
+        #print(test_bags[:20])
+        #print(test_bags_2[:20])
 
         bag_cos_sim = pairwise_cosine_similarity(test_bags,torch.tensor(self.ref_bags,device=self.device))   # b,v
         _,sorted_view_indices = torch.sort(bag_cos_sim,dim=1,descending=True)
