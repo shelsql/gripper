@@ -13,10 +13,10 @@ from itertools import combinations
 
 feat_layer = 19
 S = 32
-results = np.loadtxt(f'results/memory32_key8_iter500_use_depth_full_no_noise_no_adjust.txt')   # 1024,23
+results = np.loadtxt(f'results/memory32_key8_iter500_use_depth_no_full_no_adjust.txt')   # 1024,23
 q_preds = results[:,:4]     # 1024,4
 t_preds = results[:,4:7]    # 1024,3
-gt_poses = results[:,7:].reshape(-1,4,4)    # 1024,4,4
+gt_poses = results[:,7:23].reshape(-1,4,4)    # 1024,4,4
 gripper_pointcloud = read_pointcloud("./pointclouds/gripper.txt")   # 8192,3
 
 x = np.linspace(0,0.1,1000)

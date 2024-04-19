@@ -436,6 +436,48 @@ def compute_RT_errors(sRT_1, sRT_2, ):
 
     return result
 
+def compute_R_errors_batch(sRT_1, sRT_2):
+    """
+    Args:
+        sRT_1: [B, 4, 4]. batch of homogeneous affine transformations
+        sRT_2: [B, 4, 4]. batch of homogeneous affine transformations
+
+    Returns:
+        theta: [B]. angle difference of R in degree
+        shift: [B]. l2 difference of T in centimeter
+    """
+    # make sure the last row is [0, 0, 0, 1]
+    if sRT_1 is None or sRT_2 is None:
+        return -1
+    try:
+        assert np.all(np.array_equal(sRT_1[:, 3, :], sRT_2[:, 3, :]))
+        assert np.all(np.array_equal(sRT_1[:, 3, :], np.tile(np.array([0, 0, 0, 1]),(sRT_1.shape[0],1))))
+    except AssertionError:
+        print(sRT_1[:, 3, :], sRT_2[:, 3, :])
+        exit()
+
+    R1 = sRT_1[:, :3, :3] / np.cbrt(np.linalg.det(sRT_1[:, :3, :3])).reshape(-1,1,1)
+    # T1 = sRT_1[:, :3, 3]
+    R2 = sRT_2[:, :3, :3] / np.cbrt(np.linalg.det(sRT_2[:, :3, :3])).reshape(-1,1,1)
+    # T2 = sRT_2[:, :3, 3]
+    # symmetric when rotating around y-axis
+    # if synset_names[class_id] in ['bottle', 'can', 'bowl'] or \
+    #     (synset_names[class_id] == 'mug' and handle_visibility == 0):
+    #     y = np.array([0, 1, 0])
+    #     y1 = R1 @ y
+    #     y2 = R2 @ y
+    #     cos_theta = y1.dot(y2) / (np.linalg.norm(y1) * np.linalg.norm(y2))
+    # else:
+    R1 = np.repeat(R1[:,np.newaxis,...],R2.shape[0],axis=1)
+    R2 = np.repeat(R2[np.newaxis, ...], R1.shape[0], axis=0)
+    R = np.matmul(R1, R2.transpose(0,1,3,2))
+    cos_theta = (np.trace(R, axis1=2, axis2=3) - 1) / 2
+
+    theta = np.arccos(np.clip(cos_theta, -1.0, 1.0)) * 180 / np.pi
+    # shift = np.linalg.norm(T1 - T2, axis=1) * 100
+    # result = (theta, shift)
+
+    return theta
 
 def compute_RT_overlaps(gt_class_ids, gt_sRT, gt_handle_visibility, pred_class_ids, pred_sRT, synset_names):
     """ Finds overlaps between prediction and ground truth instances.

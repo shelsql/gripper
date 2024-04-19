@@ -10,49 +10,60 @@ from torch.utils.data import DataLoader
 import os
 from matcher import Dinov2Matcher
 import time
-from utils.spd import read_pointcloud,depth_map_to_pointcloud,pairwise_distances_torch
+from utils.spd import read_pointcloud,depth_map_to_pointcloud,pairwise_distances_torch,compute_R_errors_batch
 import pickle
 import random
 from utils.geometric_vision import solve_pnp_ransac
 import argparse
 import scipy
-
+import sys
+sys.path.append('/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build')
+import try_pybind11
 random.seed(123)
 np.random.seed(123)
 torch.manual_seed(123)
 
 class MemoryPool():
     def __init__(self,cfg):
+        self.cfg = cfg
         self.matches_3ds = []
-        self.rt_matrixs = []
+        self.pred_poses = []
         self.test_camera_Ks = []
         self.gt_poses = []
-        self.keypoint_from_depths = []
-        self.fullpoint_from_depths = []
         self.paths = []
+        if self.cfg.use_depth:
+            self.keypoint_from_depths = []
+            if self.cfg.use_full_depth:
+                self.fullpoint_from_depths = []
+
         self.initial_pose = None
-        self.relative_poses = []
+        self.relative_poses = []        # init_gt 2 gt
+
+        self.last_pred_pose = None
+        self.last_rela_pose = None
 
         self.q_for_compute_result = []
         self.t_for_compute_result = []
         self.gt_for_compute_result = []
+        self.q_before_opt = []
+        self.t_before_opt = []
 
         self.max_number = cfg.max_number
         self.key_number = cfg.key_number
         self.gripper_point = torch.tensor(read_pointcloud(cfg.gripper_point_path),device=cfg.device)
-        self.cfg = cfg
+
     def refine_new_frame(self,frame,record_vis,global_step,vis_dict=None):
         # frame: matches_3d,gt_pose,rt_matrix,camera_Ks
         self.matches_3ds.insert(0,frame['matches_3d'])      # tensor(98,6) different shape
-        self.rt_matrixs.insert(0,frame['rt_matrix'])        # np array
+        self.pred_poses.insert(0,frame['rt_matrix'])        # np array
         self.test_camera_Ks.insert(0,frame['test_camera_K'])# np array
         self.gt_poses.insert(0,frame['gt_pose'])            # np array
         self.paths.insert(0,frame['path'])
-
         if self.initial_pose is None:
-            self.initial_pose = frame['gt_pose']                    # np array
-
-        if self.cfg.add_noise:
+            self.initial_pose = frame['gt_pose']  # np array
+        if not self.cfg.add_noise:
+            self.relative_poses.insert(0, frame['gt_pose'] @ np.linalg.inv(self.initial_pose))
+        else:
             noise_r = np.eye(3)
             random_rotation = scipy.spatial.transform.Rotation.from_rotvec(np.random.randn(3) * 0.1)
             noise_r = random_rotation.apply(noise_r)
@@ -61,8 +72,6 @@ class MemoryPool():
             random_rt[:3,:3] = noise_r
             random_rt[:3,3] = noise_t
             self.relative_poses.insert(0, random_rt @ frame['gt_pose'] @ np.linalg.inv(self.initial_pose))
-        else:
-            self.relative_poses.insert(0,frame['gt_pose']@np.linalg.inv(self.initial_pose))
 
         # self.point_from_depth.insert(0,torch.tensor(frame['point_from_depth'],device=self.cfg.device))
         if self.cfg.use_depth:
@@ -71,85 +80,68 @@ class MemoryPool():
                 self.fullpoint_from_depths.insert(0,frame['fullpoint_from_depth'])  # np array
 
 
-
         # 从内存池中fps挑选k帧出来辅助优化
-        key_ids = fps_optimize_views_from_test(np.array(self.relative_poses),
-                                               select_numbers=min(len(self.relative_poses), self.key_number),
-                                               start_idx=0)
-        if len(self.matches_3ds)<self.key_number:   # 当内存池不足key_number帧时，把其他关键帧也优化一下
-            for frame_id in key_ids:
-                views_idx_for_opt = fps_optimize_views_from_test(np.array(self.relative_poses),
-                                                                 select_numbers=len(key_ids),
-                                                                 start_idx=frame_id)
-                q_pred, t_pred = self.optimize(views_idx_for_opt,self.cfg)
-                r_pred = quaternion_to_matrix(q_pred)
-                rt_pred = np.zeros((4,4))
-                rt_pred[:3,:3] = r_pred.cpu().detach().numpy()
-                rt_pred[:3, 3] = t_pred.cpu().detach().numpy()
-                rt_pred[3, 3] = 1
-                self.rt_matrixs[frame_id] = rt_pred
+        qt_pred_for_vis_seq = [] if record_vis else None
+        views_idx_for_opt = fps_optimize_views_from_test(np.array(self.pred_poses),     # 花费0.0007s
+                                                         select_numbers=min(len(self.pred_poses), self.key_number),
+                                                         start_idx=0)
+        # q_pred, t_pred = self.c_optimize(views_idx_for_opt)
+        # q_pred = torch.tensor(q_pred)
+        # t_pred = torch.tensor(t_pred)
+        q_pred, t_pred = self.optimize(views_idx_for_opt,qt_pred_for_vis_seq)   # 0.05s
 
-                if self.cfg.adjust:
-                    q_preds, t_preds = self.bundle_adjust()
-                    r_preds = quaternion_to_matrix(q_preds)
-                    rt_preds = np.zeros_like(self.rt_matrixs)
-                    rt_preds[:,:3,:3] = r_preds.cpu().detach().numpy()
-                    rt_preds[:,:3, 3] = t_preds.cpu().detach().numpy()
-                    rt_preds[:,3, 3] = 1
-                    self.rt_matrixs = [tmp for tmp in rt_preds]
+        r_pred = quaternion_to_matrix(q_pred)
+        rt_pred = np.zeros((4, 4))
+        rt_pred[:3, :3] = r_pred.cpu().detach().numpy()
+        rt_pred[:3, 3] = t_pred.cpu().detach().numpy()
+        rt_pred[3, 3] = 1
+        self.pred_poses[0] = rt_pred
 
 
-        else:
-            qt_pred_for_vis_seq = [] if record_vis else None
 
-            views_idx_for_opt = fps_optimize_views_from_test(np.array(self.relative_poses),
-                                                             select_numbers=len(key_ids),
-                                                             start_idx=0)
-            q_pred, t_pred = self.optimize(views_idx_for_opt,
-                                                self.cfg,
-                                                qt_pred_for_vis_seq)
-            r_pred = quaternion_to_matrix(q_pred)
-            rt_pred = np.zeros((4, 4))
-            rt_pred[:3, :3] = r_pred.cpu().detach().numpy()
-            rt_pred[:3, 3] = t_pred.cpu().detach().numpy()
-            rt_pred[3, 3] = 1
-            self.rt_matrixs[0] = rt_pred
+        if self.cfg.adjust:
+            q_preds, t_preds = self.bundle_adjust()
+            r_preds = quaternion_to_matrix(q_preds)
+            rt_preds = np.zeros_like(self.pred_poses)
+            rt_preds[:, :3, :3] = r_preds.cpu().detach().numpy()
+            rt_preds[:, :3, 3] = t_preds.cpu().detach().numpy()
+            rt_preds[:, 3, 3] = 1
+            self.pred_poses = [tmp for tmp in rt_preds]
 
-            if self.cfg.adjust:
-                q_preds, t_preds = self.bundle_adjust()
-                r_preds = quaternion_to_matrix(q_preds)
-                rt_preds = np.zeros_like(self.rt_matrixs)
-                rt_preds[:, :3, :3] = r_preds.cpu().detach().numpy()
-                rt_preds[:, :3, 3] = t_preds.cpu().detach().numpy()
-                rt_preds[:, 3, 3] = 1
-                self.rt_matrixs = [tmp for tmp in rt_preds]
+        if vis_dict != None:
+            vis_dict['qt_preds'] = qt_pred_for_vis_seq
+            if not os.path.exists(f'vis_results/memory_pool_tydata'):
+                os.makedirs(f'vis_results/memory_pool_tydata')
+            with open(f'vis_results/memory_pool_tydata/step{global_step}.pkl', 'wb') as f:
+                pickle.dump(vis_dict, f)
 
-            if vis_dict != None:
-                vis_dict['qt_preds'] = qt_pred_for_vis_seq
-                if not os.path.exists(f'vis_results/memory_pool_tydata'):
-                    os.makedirs(f'vis_results/memory_pool_tydata')
-                with open(f'vis_results/memory_pool_tydata/step{global_step}.pkl', 'wb') as f:
-                    pickle.dump(vis_dict, f)
-
-        self.q_for_compute_result.append(matrix_to_quaternion(torch.tensor(self.rt_matrixs[0][:3,:3])).cpu().detach().numpy())
-        self.t_for_compute_result.append(self.rt_matrixs[0][:3,3])
+        self.q_for_compute_result.append(matrix_to_quaternion(torch.tensor(self.pred_poses[0][:3,:3])).cpu().detach().numpy())
+        self.t_for_compute_result.append(self.pred_poses[0][:3,3])
         self.gt_for_compute_result.append(self.gt_poses[0])
+
+        # 不论高低精度，都记录上一帧的gtpose和predpose
+        self.last_pred_pose = rt_pred
+        self.last_rela_pose = self.relative_poses[0]
+
         # 如果内存池已满，则删除其中一帧
-        # 以gt_pose中的旋转为依据
         if len(self.matches_3ds) > self.max_number:
             self.eliminate_one_frame()
 
+
+
     def eliminate_one_frame(self):
-        dist_mat = np.zeros((len(self.relative_poses), len(self.relative_poses)))
-        for i, pose1 in enumerate(self.relative_poses):  # TODO batch形式
-            for j, pose2 in enumerate(self.relative_poses):
-                dist_mat[i, j], _ = compute_RT_errors(pose1, pose2)
+        # 用pred_pose选择要删除的帧
+        dist_mat = compute_R_errors_batch(np.array(self.pred_poses),np.array(self.pred_poses))
+        # dist_mat = np.zeros((len(self.pred_poses), len(self.pred_poses)))
+        # for i, pose1 in enumerate(self.pred_poses):  # TODO batch形式
+        #     for j, pose2 in enumerate(self.pred_poses):
+        #         dist_mat[i, j], _ = compute_RT_errors(pose1, pose2)
         distsum = np.sum(dist_mat,axis=1,keepdims=False)
         eliminate_id = np.argsort(distsum)[0]
+
         self.matches_3ds.pop(eliminate_id)
-        self.rt_matrixs.pop(eliminate_id)
-        # self.q_for_compute_result.append(matrix_to_quaternion(torch.tensor(final_rt[:3,:3])).cpu().detach().numpy())
-        # self.t_for_compute_result.append(torch.tensor(final_rt[:3,3]).cpu().detach().numpy())
+        self.pred_poses.pop(eliminate_id)
+
         self.test_camera_Ks.pop(eliminate_id)
         self.paths.pop(eliminate_id)
         if self.cfg.use_depth:
@@ -157,7 +149,7 @@ class MemoryPool():
             if self.cfg.use_full_depth:
                 self.fullpoint_from_depths.pop(eliminate_id)
         self.gt_poses.pop(eliminate_id)
-        # self.gt_for_compute_result.append(torch.tensor(cor_gt,device=cfg.device,dtype=torch.float32).cpu().detach().numpy())
+
         self.relative_poses.pop(eliminate_id)
 
     def eliminate_all_frames_and_compute_result(self):
@@ -169,173 +161,248 @@ class MemoryPool():
 
         results = np.concatenate([np.stack(self.q_for_compute_result),
                              np.stack(self.t_for_compute_result),
-                             np.stack(self.gt_for_compute_result).reshape(-1, 16)],axis=1)  # 1024,4+3+16
+                             np.stack(self.gt_for_compute_result,).reshape(-1, 16),
+                                  np.stack(self.q_before_opt),
+                                  np.stack(self.t_before_opt)],axis=1)  # 1024,4+3+16(+4+3)
         if not os.path.exists(f'results'):
             os.makedirs(f'results')
         depth_str = 'use_depth' if cfg.use_depth else 'no_depth'
-        noise_str = 'add_noise' if cfg.add_noise else 'no_noise'
+        # noise_str = 'add_noise' if cfg.add_noise else 'no_noise'
         adjust_str = 'adjust' if cfg.adjust else 'no_adjust'
         full_str = 'full' if cfg.use_full_depth else 'no_full'
         max_iter_str = cfg.max_iter
 
-        np.savetxt(f'results/memory{self.max_number}_key{self.key_number}_iter{max_iter_str}_{depth_str}_{full_str}_{noise_str}_{adjust_str}.txt', results)
+        np.savetxt(f'results/memory{self.max_number}_key{self.key_number}_iter{max_iter_str}_{depth_str}_{full_str}_{adjust_str}.txt', results)
 
-    def optimize(self,views_idx_for_opt,cfg,qt_pred_for_vis_seq=None):
+    def optimize(self,views_idx_for_opt,qt_pred_for_vis_seq=None):
         '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助'''
         # matches_3ds: list[tensor(342,6),...] different shape
         # other: list[np.array(4,4)or(3,3)], same shape
-
+        time0 = time.time()
         matches_3ds = [self.matches_3ds[i] for i in views_idx_for_opt]   # list[tensor(342,6),...] different shape
-        if cfg.use_depth:
+        if self.cfg.use_depth:
             keypoint_from_depths = [torch.tensor(self.keypoint_from_depths[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt]        # list[tensor(98,3),...] different shape
             if self.cfg.use_full_depth:
                 fullpoint_from_depths = [torch.tensor(self.fullpoint_from_depths[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt]      # list[tensor(2728,3)]
 
-        rt_matrixs = torch.stack([torch.tensor(self.rt_matrixs[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt])            # b,4,4
-        q_preds = matrix_to_quaternion(rt_matrixs[:,:3,:3])
-        t_preds = rt_matrixs[:,:3,3]
+        # pred_poses = torch.stack([torch.tensor(self.pred_poses[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt])            # b,4,4
+        # q_preds = matrix_to_quaternion(pred_poses[:,:3,:3])
+        # t_preds = pred_poses[:,:3,3]
         test_camera_Ks = torch.stack([torch.tensor(self.test_camera_Ks[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt])   # b,3,3
-        relative_poses_tmp = torch.stack([torch.tensor(self.relative_poses[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt])                # b,4,4
-        q_relatives = matrix_to_quaternion(relative_poses_tmp[:, :3, :3])  # b,4
-        t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
-        q_rela = q_relatives[0]
-        t_rela = t_relatives[0]
 
-        # 用所有初值相对于当前优化帧的姿势取平均(当达到关键帧数量后，不再使用当前帧通过pnp预测的pose)
-        # q_relative_list, t_relative_list = [], []
-        q_pred_list, t_pred_list = [], []
-        for i in range(1, len(matches_3ds)) if (len(matches_3ds) > cfg.key_number and cfg.key_number!=1) else range(len(matches_3ds)):
-            q_pred_tmp = quaternion_multiply(q_preds[i],quaternion_multiply(q_relatives[i],quaternion_invert(q_rela)))
-            t_pred_tmp = quaternion_apply(q_pred_tmp,-t_rela) + quaternion_apply(q_preds[i],t_relatives[i]) + t_preds[i]
-            q_pred_list.append(q_pred_tmp)
-            t_pred_list.append(t_pred_tmp)
-            # rt_relative = rt_matrixs[i] @ (relative_poses[i]) @ torch.inverse(relative_poses[0])
-            # q_relative = matrix_to_quaternion(rt_relative[:3, :3])
-            # q_relative_list.append(q_relative)
-            # t_relative = rt_relative[:3, 3]
-            # t_relative_list.append(t_relative)
-        q_avg = torch.mean(torch.stack(q_pred_list), dim=0)
-        t_avg = torch.mean(torch.stack(t_pred_list), dim=0)
-        q_pred = torch.tensor(q_avg / torch.norm(q_avg), device=matches_3ds[0].device,requires_grad=True)
-        t_pred = torch.tensor(t_avg, device=matches_3ds[0].device, requires_grad=True)
-        # q_pred = torch.tensor(matrix_to_quaternion(rt_matrixs[:3, :3]), requires_grad=True)  # 4
-        # t_pred = torch.tensor(rt_matrixs[:3, 3], requires_grad=True)  # 3
-        optimizer = torch.optim.Adam([ q_pred, t_pred], lr=2e-3)
-        # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[10],gamma=0.1)
-        start_time = time.time()
-        iteration = 0
-        loss_change = 1
-        loss_last = 0
-        qt_pred_for_vis_frame = []
 
+        # 因为是tracking，所以不管高低精度都用上一帧加相对位移作为初值
+        # 注意gt要取逆，作用方式才和pred_pose一样 TODO 检查
+        if self.last_pred_pose is not None:
+            rt_init = self.last_pred_pose @ self.last_rela_pose @ np.linalg.inv(self.relative_poses[0])
+        else:
+            rt_init = self.pred_poses[0]
+        rt_init = torch.tensor(rt_init,device=self.cfg.device,dtype=cfg.dtype)
+        q_pred = matrix_to_quaternion(rt_init[:3, :3])  # 4
+        t_pred = rt_init[:3, 3]  # 3
+        self.q_before_opt.append(q_pred.cpu().numpy())
+        self.t_before_opt.append(t_pred.cpu().numpy())
+        time1 = time.time()
+
+        if self.cfg.rela_mode == "gt":        # 高精度时，使用相对于数据集第一帧的pose 计算相对pose 来优化
+            relative_poses_tmp = torch.stack([torch.tensor(self.relative_poses[i],dtype=cfg.dtype,device=cfg.device) for i in views_idx_for_opt])                # b,4,4
+            q_relatives = matrix_to_quaternion(relative_poses_tmp[:, :3, :3])  # b,4
+            t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
+            q_rela = q_relatives[0]
+            t_rela = t_relatives[0]
+        else:                                   # 低精度时，使用pred_pose 计算相对pose 来优化
+            relative_poses_tmp = torch.stack([torch.inverse(torch.tensor(self.pred_poses[i],dtype=cfg.dtype,device=cfg.device)) for i in views_idx_for_opt])                # b,4,4
+            q_relatives = matrix_to_quaternion(relative_poses_tmp[:, :3, :3])  # b,4
+            t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
+            q_rela = q_relatives[0]
+            t_rela = t_relatives[0]
+        time2 = time.time()     # 20ms~30ms
         # step1: refine with keypoints
-        while iteration < 100 and abs(loss_change) > 1e-2:
-            if cfg.record_vis:
-                qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
-            optimizer.zero_grad()
-            reproj_dis_list = []
-            key3d_dis_list = []
-            for i in range(len(matches_3ds)):
-                fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
-                pred_3dkey = quaternion_apply(quaternion_invert(q_relatives[i]),matches_3ds[i][:, 3:]) - quaternion_apply(quaternion_invert(q_relatives[i]),t_relatives[i])
-                pred_3dkey = quaternion_apply(q_rela,pred_3dkey) + t_rela
-                pred_3dkey = quaternion_apply(q_pred,pred_3dkey) + t_pred
-                # use rotation matrix to change:
-                # pred_3dkey = quaternion_apply(matrix_to_quaternion(torch.inverse(relative_poses[i])[:3, :3]),
-                #                               matches_3ds[i][:, 3:]) + torch.inverse(relative_poses[i])[:3, 3]
-                # pred_3dkey = quaternion_apply(matrix_to_quaternion(relative_poses[0][:3, :3]), pred_3dkey) + relative_poses[0][:3,
-                #                                                                                        3]
-                # pred_3dkey = quaternion_apply(q_pred, pred_3dkey) + t_pred
+        # 也是先剔去离群点再优化，这样在c++中也方便实现
+        # 以及在外部就把点云旋转好，进去的话只用左乘pred
+        matches_3ds_within_3sigma = []
+        keypoint_from_depths_within_3sigma = []
+        gripper_rela = []   # 进去只用左乘pred
+        for i in range(len(matches_3ds)):
+            q_rela_tmp = quaternion_multiply(q_rela, quaternion_invert(q_relatives[i]))
+            t_rela_tmp = quaternion_apply(q_rela_tmp, -t_relatives[i]) + t_rela
+            q_pred_tmp = quaternion_multiply(q_pred,q_rela_tmp)
+            t_pred_tmp = quaternion_apply(q_pred,t_rela_tmp) + t_pred
 
+            fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
+            # pred_3dkey = quaternion_apply(quaternion_invert(q_relatives[i]),
+            #                               matches_3ds[i][:, 3:]) - quaternion_apply(
+            #     quaternion_invert(q_relatives[i]), t_relatives[i])
+            # pred_3dkey = quaternion_apply(q_rela, pred_3dkey) + t_rela
+            pred_3dkey = quaternion_apply(q_pred_tmp, matches_3ds[i][:, 3:]) + t_pred_tmp
 
-                if cfg.use_depth:
-                    key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey, dim=-1)
-                    key3d_dis_list.append(key3d_dis)
-
-                proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,
-                                                                                         :]).transpose(1, 0)[:,
-                          :2]  # 220,2
-                reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
-                reproj_dis_list.append(reproj_dis)
-
-
-            reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
-            mean = reproj_dis_list.mean()
-            std = reproj_dis_list.std()
-            within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
-            reproj_dis_list = reproj_dis_list[within_3sigma]  # 删除垃圾点
-
-            if cfg.use_depth:
-                key3d_dis_list = torch.cat(key3d_dis_list, dim=0)
-                mean = key3d_dis_list.mean()
-                std = key3d_dis_list.std()
-                within_3sigma = (key3d_dis_list >= mean - 1 * std) & (key3d_dis_list <= mean + 1 * std)
-                key3d_dis_list = key3d_dis_list[within_3sigma]
-
-
-
-            q_loss = 1e5 * (1 - torch.norm(q_pred)) ** 2
-            reproj_loss = torch.mean(reproj_dis_list)
-            # c_loss = 1000*torch.mean(chamfer_dis_list)
-            if cfg.use_depth:
-                key3d_loss = 1000 * torch.mean(key3d_dis_list)
-                loss = q_loss + reproj_loss + key3d_loss
-
-                # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(), 'key3d_loss', key3d_loss.item(),loss.item())
-            else:
-                loss = q_loss + reproj_loss
-
-                # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(),  loss.item())
-
-
-
-            loss.backward()
-            optimizer.step()
-            # scheduler.step()
-
-            loss_change = loss - loss_last
-            loss_last = loss
-            iteration += 1
-
-        # torch.cuda.empty_cache()
-
-        # step2: refine with full depth image
-        # 先剔去离群点再优化，而不是在优化过程中筛选
-
-        if cfg.use_depth:
-            if cfg.use_full_depth:
-                fullpoint_from_depths_in3sigma_list = []
-                for i in range(len(matches_3ds)):
-                    pred_3dfull = quaternion_apply(quaternion_invert(q_relatives[i]),self.gripper_point) - quaternion_apply(quaternion_invert(q_relatives[i]),t_relatives[i])
-                    pred_3dfull = quaternion_apply(q_rela, pred_3dfull) + t_rela
-                    pred_3dfull = quaternion_apply(q_pred, pred_3dfull) + t_pred
+            if self.cfg.use_depth:
+                key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey, dim=-1)
+                mean = key3d_dis.mean()
+                std = key3d_dis.std()
+                within_3sigma_3d = (key3d_dis >= mean-1*std) & (key3d_dis <= mean+1*std)
+                if self.cfg.use_full_depth:
+                    pred_3dfull = quaternion_apply(q_pred_tmp,self.gripper_point) + t_pred_tmp
                     chamfer_dis = chamfer_distance(fullpoint_from_depths[i],pred_3dfull)
                     mean = chamfer_dis.mean()
                     std = chamfer_dis.std()
-                    within_3sigma = (chamfer_dis >= mean - 1 * std) & (chamfer_dis <= mean + 1 * std)
-                    fullpoint_from_depths_in3sigma_list.append(fullpoint_from_depths[i][within_3sigma])
+                    within_3sigma_full = (chamfer_dis >= mean-1*std) & (chamfer_dis<=mean+1*std)
+                    gripper_rela.append(quaternion_apply(q_rela_tmp,self.gripper_point) + t_rela_tmp)
+                    fullpoint_from_depths[i] = fullpoint_from_depths[i][within_3sigma_full]
 
+            proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,
+                                                                                     :]).transpose(1, 0)[:,:2]  # 220,2
+            reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
+            mean = reproj_dis.mean()
+            std = reproj_dis.std()
+            within_3sigma_2d = (reproj_dis >= mean-1*std) & (reproj_dis <= mean+1*std)
+            within_3sigma = (within_3sigma_2d & within_3sigma_3d) if cfg.use_depth else within_3sigma_2d
+            matches_3ds_within_3sigma.append(matches_3ds[i][within_3sigma])
+            # q_rela_tmp = quaternion_multiply(q_rela, quaternion_invert(q_relatives[i]))
+            # t_rela_tmp = quaternion_apply(q_rela_tmp, -t_relatives[i]) + t_rela
+            matches_3ds_within_3sigma[i][:, 3:] = quaternion_apply(q_rela_tmp,
+                                                                   matches_3ds_within_3sigma[i][:, 3:]) + t_rela_tmp
+            if self.cfg.use_depth:
+                keypoint_from_depths_within_3sigma.append(keypoint_from_depths[i][within_3sigma])
+        time3 = time.time()     # 15 ms
+        if self.cfg.use_cpp:
+            camera_Ks = torch.zeros((len(matches_3ds), 4),device=self.cfg.device)
+            camera_Ks[:, [0, 1, 2, 3]] = test_camera_Ks[:, [0, 0, 1, 1], [0, 2, 1, 2]]
+            # 在外部就把点云旋转好，进去的话只用左乘pred
+            # q_rela_list, t_rela_list = [], []
+            # for i in range(len(matches_3ds)):
+            #     q_rela_tmp = quaternion_multiply(q_rela,quaternion_invert(q_relatives[i]))
+            #     t_rela_tmp = quaternion_apply(q_rela_tmp,-t_relatives[i]) + t_rela
+            #     matches_3ds_within_3sigma[i][:,3:] = quaternion_apply(q_rela_tmp,matches_3ds_within_3sigma[i][:,3:] ) + t_rela_tmp
+            time4 = time.time()
+            if cfg.use_depth:
+                q_pred,t_pred = try_pybind11.optimize_step1_usedepth(
+                    [tmp[:,1:3].tolist() for tmp in matches_3ds_within_3sigma],
+                    [tmp[:,3:].tolist() for tmp in matches_3ds_within_3sigma],
+                    camera_Ks.tolist(),
+                    q_pred.tolist(),
+                    t_pred.tolist(),
+                    [tmp.tolist() for tmp in keypoint_from_depths_within_3sigma]
+                )
+                q_pred = torch.tensor(q_pred,device=self.cfg.device, dtype=self.cfg.dtype)
+                t_pred = torch.tensor(t_pred,device=self.cfg.device,dtype=self.cfg.dtype)
+            else:
+                q_pred,t_pred = try_pybind11.optimize_step1_nodepth(
+                    [tmp[:,1:3].tolist() for tmp in matches_3ds_within_3sigma],
+                    [tmp[:,3:].tolist() for tmp in matches_3ds_within_3sigma],
+                    camera_Ks.tolist(),
+                    q_pred.tolist(),
+                    t_pred.tolist(),
+                )
+                q_pred = torch.tensor(q_pred,device=self.cfg.device, dtype=self.cfg.dtype)
+                t_pred = torch.tensor(t_pred,device=self.cfg.device,dtype=self.cfg.dtype)
+            time5 = time.time()
+            print(f'time0{time1-time0} time1{time2-time1} time2{time3-time2} time3{time4-time3} time4{time5-time4} ')
+        else:
+            q_pred = q_pred.requires_grad_()
+            t_pred = t_pred.requires_grad_()
+            start_time = time.time()
+            iteration = 0
+            loss_change = 1
+            loss_last = 0
+            qt_pred_for_vis_frame = []
+            optimizer = torch.optim.Adam([q_pred, t_pred], lr=2e-3)
+            while iteration < 100 and abs(loss_change) > 1e-2:
+                if cfg.record_vis:
+                    qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
+                optimizer.zero_grad()
+                reproj_dis_list = []
+                key3d_dis_list = []
+                for i in range(len(matches_3ds)):
+                    # fact_2d = matches_3ds_within_3sigma[i][:, 1:3].clone()  # 342,2
+                    # pred_3dkey = quaternion_apply(quaternion_invert(q_relatives[i]),matches_3ds_within_3sigma[i][:, 3:]) - quaternion_apply(quaternion_invert(q_relatives[i]),t_relatives[i])
+                    # pred_3dkey = quaternion_apply(q_rela,pred_3dkey) + t_rela
+                    pred_3dkey = quaternion_apply(q_pred,matches_3ds_within_3sigma[i][:, 3:]) + t_pred
+
+                    if cfg.use_depth:
+                        key3d_dis = torch.norm(keypoint_from_depths_within_3sigma[i] - pred_3dkey, dim=-1)
+                        key3d_dis_list.append(key3d_dis)
+
+                    proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,
+                                                                                             :]).transpose(1, 0)[:,
+                              :2]  # 220,2
+                    reproj_dis = torch.norm(matches_3ds_within_3sigma[i][:, 1:3] - proj_2d, dim=1)  # 220,
+                    reproj_dis_list.append(reproj_dis)
+                reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
+                q_loss = 1e5 * (1 - torch.norm(q_pred)) ** 2
+                reproj_loss = torch.mean(reproj_dis_list)
+                # c_loss = 1000*torch.mean(chamfer_dis_list)
+                if cfg.use_depth:
+                    key3d_dis_list = torch.cat(key3d_dis_list,dim=0)
+                    key3d_loss = 1000 * torch.mean(key3d_dis_list)
+                    loss = q_loss + reproj_loss + key3d_loss
+
+                    # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(), 'key3d_loss', key3d_loss.item(),loss.item())
+                else:
+                    loss = q_loss + reproj_loss
+
+                    # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(),  loss.item())
+
+                loss.backward()
+                optimizer.step()
+                # scheduler.step()
+
+                loss_change = loss - loss_last
+                loss_last = loss
+                iteration += 1
+        # step2: refine with full depth image
+        # 先剔去离群点再优化，而不是在优化过程中筛选
+
+        if self.cfg.use_depth:
+            if self.cfg.use_full_depth:
+                # 也在外部旋转好再送进去,同时筛去离群点
+
+                # fullpoint_from_depths_in3sigma_list = []
+                # for i in range(len(matches_3ds)):
+                #     pred_3dfull = quaternion_apply(quaternion_invert(q_relatives[i]),
+                #                                    self.gripper_point) - quaternion_apply(
+                #         quaternion_invert(q_relatives[i]), t_relatives[i])
+                #     pred_3dfull = quaternion_apply(q_rela, pred_3dfull) + t_rela
+                #     pred_3dfull = quaternion_apply(q_pred, pred_3dfull) + t_pred
+                #     chamfer_dis = chamfer_distance(fullpoint_from_depths[i], pred_3dfull)
+                #     mean = chamfer_dis.mean()
+                #     std = chamfer_dis.std()
+                #     within_3sigma = (chamfer_dis >= mean - 1 * std) & (chamfer_dis <= mean + 1 * std)
+                #     fullpoint_from_depths_in3sigma_list.append(fullpoint_from_depths[i][within_3sigma])
+
+
+                # 有问题
+                # if self.cfg.use_cpp:
+                #     q_pred, t_pred = try_pybind11.optimize_step2(
+                #         q_pred.tolist(),
+                #         t_pred.tolist(),
+                #         [tmp.tolist() for tmp in fullpoint_from_depths],
+                #         [tmp.tolist() for tmp in gripper_rela]
+                #     )
+                #     q_pred = torch.tensor(q_pred, device=self.cfg.device, dtype=self.cfg.dtype)
+                #     t_pred = torch.tensor(t_pred, device=self.cfg.device, dtype=self.cfg.dtype)
+                # else:
+                q_pred = q_pred.requires_grad_()
+                t_pred = t_pred.requires_grad_()
+
+                optimizer = torch.optim.Adam([q_pred, t_pred], lr=2e-3)
                 iteration = 0
                 loss_change = 1
                 loss_last = 0
 
-                # q_pred = q_pred.detach().cpu().numpy()
-                # t_pred = t_pred.detach().cpu().numpy()
-                # q_pred = torch.tensor(q_pred, device=cfg.device, dtype=cfg.dtype, requires_grad=True)
-                # t_pred = torch.tensor(t_pred, device=cfg.device, dtype=cfg.dtype, requires_grad=True)
                 while iteration < 100 and abs(loss_change) > 5e-3:
                     if cfg.record_vis:
                         qt_pred_for_vis_frame.append((q_pred.tolist(), t_pred.tolist()))
                     optimizer.zero_grad()
                     chamfer_dis_list = []
                     for i in range(len(matches_3ds)):
-                        pred_3dfull = quaternion_apply(quaternion_invert(q_relatives[i]),
-                                                       self.gripper_point) - quaternion_apply(
-                            quaternion_invert(q_relatives[i]), t_relatives[i])
-                        pred_3dfull = quaternion_apply(q_rela, pred_3dfull) + t_rela
-                        pred_3dfull = quaternion_apply(q_pred, pred_3dfull) + t_pred
+                        # pred_3dfull = quaternion_apply(quaternion_invert(q_relatives[i]),
+                        #                                self.gripper_point) - quaternion_apply(
+                        #     quaternion_invert(q_relatives[i]), t_relatives[i])
+                        # pred_3dfull = quaternion_apply(q_rela, pred_3dfull) + t_rela
+                        pred_3dfull = quaternion_apply(q_pred, gripper_rela[i]) + t_pred
 
-                        chamfer_dis = chamfer_distance(fullpoint_from_depths_in3sigma_list[i], pred_3dfull)
+                        chamfer_dis = chamfer_distance(fullpoint_from_depths[i], pred_3dfull)
                         chamfer_dis_list.append(chamfer_dis)
                     chamfer_dis_list = torch.cat(chamfer_dis_list, dim=0)
                     # print(chamfer_dis_list.shape)
@@ -355,126 +422,131 @@ class MemoryPool():
 
         if qt_pred_for_vis_seq is not None:
             # 每次只挑30帧左右可视化
-            if len(qt_pred_for_vis_frame) > 27:
-                first_qt = qt_pred_for_vis_frame.pop(0)
-                last_qt = qt_pred_for_vis_frame.pop()
-                step = len(qt_pred_for_vis_frame) // 25
-                qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i * step] for i in range(25)]
-                qt_pred_for_vis_frame.insert(0, first_qt)
-                qt_pred_for_vis_frame.append(last_qt)
-                qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
-            else:
-                qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
-        end_time = time.time()
-        print("Time", end_time - start_time)
-        print('num_of_iter', iteration)
+            if not self.cfg.use_cpp:
+                if len(qt_pred_for_vis_frame) > 27:
+                    first_qt = qt_pred_for_vis_frame.pop(0)
+                    last_qt = qt_pred_for_vis_frame.pop()
+                    step = len(qt_pred_for_vis_frame) // 25
+                    qt_pred_for_vis_frame = [qt_pred_for_vis_frame[i * step] for i in range(25)]
+                    qt_pred_for_vis_frame.insert(0, first_qt)
+                    qt_pred_for_vis_frame.append(last_qt)
+                    qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
+                else:
+                    qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
+                end_time = time.time()
+                print("Time", end_time - start_time)
+                print('num_of_iter', iteration)
         return q_pred, t_pred
 
     def bundle_adjust(self):
         matches_3ds = self.matches_3ds  # list[tensor(342,6),...] different shape
-        if cfg.use_depth:
+        if self.cfg.use_depth:
             keypoint_from_depths = [torch.tensor(tmp, dtype=cfg.dtype, device=cfg.device) for tmp in self.keypoint_from_depths]  # list[tensor(98,3),...] different shape
-            if self.cfg.use_full_depth:
-                fullpoint_from_depths = [torch.tensor(tmp, dtype=cfg.dtype, device=cfg.device) for tmp in self.fullpoint_from_depths]  # list[tensor(2728,3)]
 
-        rt_matrixs = torch.stack(
-            [torch.tensor(tmp, dtype=cfg.dtype, device=cfg.device) for tmp in self.rt_matrixs])  # b,4,4
-        q_preds = matrix_to_quaternion(rt_matrixs[:, :3, :3]).requires_grad_()
-        t_preds = rt_matrixs[:, :3, 3].requires_grad_()
+        pred_poses = torch.stack(
+            [torch.tensor(tmp, dtype=cfg.dtype, device=cfg.device) for tmp in self.pred_poses])  # b,4,4
+        q_preds = matrix_to_quaternion(pred_poses[:, :3, :3]).requires_grad_()
+        t_preds = pred_poses[:, :3, 3].requires_grad_()
         test_camera_Ks = torch.stack([torch.tensor(tmp, dtype=cfg.dtype, device=cfg.device) for tmp in
                                       self.test_camera_Ks])  # b,3,3
-        optimizer = torch.optim.Adam([ q_preds, t_preds], lr=2e-3)
-        # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[10],gamma=0.1)
-        start_time = time.time()
-        iteration = 0
-        loss_change = 1
-        loss_last = 0
 
-        # step1: refine with keypoints
-        while iteration < 100 and abs(loss_change) > 1e-2:
-            optimizer.zero_grad()
-            reproj_dis_list = []
-            key3d_dis_list = []
-            for i in range(len(matches_3ds)):
-                fact_2d = matches_3ds[i][:,1:3].clone()
-                pred_3dkey = quaternion_apply(q_preds[i],matches_3ds[i][:,3:]) + t_preds[i]
-                proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,:]).transpose(1, 0)[:,:2]  # 220,2
-                reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
-                reproj_dis_list.append(reproj_dis)
+        matches_3ds_within_3sigma = []
+        keypoint_from_depths_within_3sigma = []
+        for i in range(len(matches_3ds)):
+            q_pred_tmp = q_preds[i]
+            t_pred_tmp = t_preds[i]
+
+            fact_2d = matches_3ds[i][:, 1:3].clone()  # 342,2
+            # pred_3dkey = quaternion_apply(quaternion_invert(q_relatives[i]),
+            #                               matches_3ds[i][:, 3:]) - quaternion_apply(
+            #     quaternion_invert(q_relatives[i]), t_relatives[i])
+            # pred_3dkey = quaternion_apply(q_rela, pred_3dkey) + t_rela
+            pred_3dkey = quaternion_apply(q_pred_tmp, matches_3ds[i][:, 3:]) + t_pred_tmp
+
+            if self.cfg.use_depth:
+                key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey, dim=-1)
+                mean = key3d_dis.mean()
+                std = key3d_dis.std()
+                within_3sigma_3d = (key3d_dis >= mean-1*std) & (key3d_dis <= mean+1*std)
+
+            proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,
+                                                                                     :]).transpose(1, 0)[:,:2]  # 220,2
+            reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
+            mean = reproj_dis.mean()
+            std = reproj_dis.std()
+            within_3sigma_2d = (reproj_dis >= mean-1*std) & (reproj_dis <= mean+1*std)
+            within_3sigma = (within_3sigma_2d & within_3sigma_3d) if cfg.use_depth else within_3sigma_2d
+            matches_3ds_within_3sigma.append(matches_3ds[i][within_3sigma])
+
+            if self.cfg.use_depth:
+                keypoint_from_depths_within_3sigma.append(keypoint_from_depths[i][within_3sigma])
+
+        if self.cfg.use_cpp:
+            camera_Ks = torch.zeros((len(matches_3ds), 4),device=self.cfg.device)
+            camera_Ks[:, [0, 1, 2, 3]] = test_camera_Ks[:, [0, 0, 1, 1], [0, 2, 1, 2]]
+            q_preds,t_preds = try_pybind11.adjust(
+                [tmp[:,1:3].tolist() for tmp in matches_3ds_within_3sigma],
+                [tmp[:, 3:].tolist() for tmp in matches_3ds_within_3sigma],
+                camera_Ks.tolist(),
+                q_preds.tolist(),
+                t_preds.tolist()
+            )
+            q_preds = torch.tensor(q_preds,device=self.cfg.device,dtype=self.cfg.dtype).reshape(-1,4)
+            t_preds = torch.tensor(t_preds, device=self.cfg.device, dtype=self.cfg.dtype).reshape(-1,3)
+        else:
+            optimizer = torch.optim.Adam([ q_preds, t_preds], lr=2e-3)
+            start_time = time.time()
+            iteration = 0
+            loss_change = 1
+            loss_last = 0
+            # step1: refine with keypoints
+            while iteration < 100 and abs(loss_change) > 1e-2:
+                optimizer.zero_grad()
+                reproj_dis_list = []
+                key3d_dis_list = []
+                for i in range(len(matches_3ds)):
+                    fact_2d = matches_3ds[i][:,1:3].clone()
+                    pred_3dkey = quaternion_apply(q_preds[i],matches_3ds[i][:,3:]) + t_preds[i]
+                    proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,:]).transpose(1, 0)[:,:2]  # 220,2
+                    reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
+                    reproj_dis_list.append(reproj_dis)
+                    if cfg.use_depth:
+                        key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey,dim=-1)
+                        key3d_dis_list.append(key3d_dis)
+
+                reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
+                mean = reproj_dis_list.mean()
+                std = reproj_dis_list.std()
+                within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
+                reproj_dis_list = reproj_dis_list[within_3sigma]  # 删除垃圾点
+
                 if cfg.use_depth:
-                    key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey,dim=-1)
-                    key3d_dis_list.append(key3d_dis)
+                    key3d_dis_list = torch.cat(key3d_dis_list, dim=0)
+                    mean = key3d_dis_list.mean()
+                    std = key3d_dis_list.std()
+                    within_3sigma = (key3d_dis_list >= mean - 1 * std) & (key3d_dis_list <= mean + 1 * std)
+                    key3d_dis_list = key3d_dis_list[within_3sigma]
 
-            reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
-            mean = reproj_dis_list.mean()
-            std = reproj_dis_list.std()
-            within_3sigma = (reproj_dis_list >= mean - 1 * std) & (reproj_dis_list <= mean + 1 * std)
-            reproj_dis_list = reproj_dis_list[within_3sigma]  # 删除垃圾点
+                q_loss = 1e5 * (1 - torch.norm(q_preds,dim=-1).mean()) ** 2
+                reproj_loss = torch.mean(reproj_dis_list)
 
-            if cfg.use_depth:
-                key3d_dis_list = torch.cat(key3d_dis_list, dim=0)
-                mean = key3d_dis_list.mean()
-                std = key3d_dis_list.std()
-                within_3sigma = (key3d_dis_list >= mean - 1 * std) & (key3d_dis_list <= mean + 1 * std)
-                key3d_dis_list = key3d_dis_list[within_3sigma]
+                if cfg.use_depth:
+                    key3d_loss = 1000 * torch.mean(key3d_dis_list)
+                    loss = q_loss + reproj_loss + key3d_loss
+                    # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(), 'key3d_loss', key3d_loss.item(),loss.item())
+                else:
+                    loss = q_loss + reproj_loss
+                    # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(),  loss.item())
 
-            q_loss = 1e5 * (1 - torch.norm(q_preds,dim=-1).mean()) ** 2
-            reproj_loss = torch.mean(reproj_dis_list)
+                loss.backward()
+                optimizer.step()
+                # scheduler.step()
 
-            if cfg.use_depth:
-                key3d_loss = 1000 * torch.mean(key3d_dis_list)
-                loss = q_loss + reproj_loss + key3d_loss
-                print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(), 'key3d_loss', key3d_loss.item(),loss.item())
-            else:
-                loss = q_loss + reproj_loss
-                # print(iteration, 'q_loss', q_loss.item(), 'reproj', reproj_loss.item(),  loss.item())
+                loss_change = loss - loss_last
+                loss_last = loss
+                iteration += 1
+        return q_preds, t_preds
 
-            loss.backward()
-            optimizer.step()
-            # scheduler.step()
-
-            loss_change = loss - loss_last
-            loss_last = loss
-            iteration += 1
-
-        # if cfg.use_depth:         # 显存放不下
-        #     if cfg.use_full_depth:
-        #         fullpoint_from_depths_in3sigma_list = []
-        #         for i in range(len(matches_3ds)):
-        #             pred_3dfull = quaternion_apply(q_preds[i],self.gripper_point) + t_preds[i]
-        #             chamfer_dis = chamfer_distance(fullpoint_from_depths[i],pred_3dfull)
-        #             mean = chamfer_dis.mean()
-        #             std = chamfer_dis.std()
-        #             within_3sigma = (chamfer_dis >= mean-1*std) & (chamfer_dis <= mean+1*std)
-        #             fullpoint_from_depths_in3sigma_list.append(fullpoint_from_depths[i][within_3sigma])
-        #
-        #         iteration = 0
-        #         loss_change = 1
-        #         loss_last = 0
-        #         while iteration<100 and abs(loss_change)> 5e-3:
-        #             optimizer.zero_grad()
-        #             chamfer_dis_list = []
-        #             for i in range(len(matches_3ds)):
-        #                 pred_3dfull = quaternion_apply(q_preds[i],self.gripper_point) + t_preds[i]
-        #                 chamfer_dis = chamfer_distance(fullpoint_from_depths_in3sigma_list[i],pred_3dfull)
-        #                 chamfer_dis_list.append(chamfer_dis)
-        #             chamfer_dis_list = torch.cat(chamfer_dis_list, dim=0)
-        #             # print(chamfer_dis_list.shape)
-        #
-        #             q_loss = 1e5 * (1 - torch.norm(q_preds,dim=-1).mean()) ** 2
-        #             c_loss = 1000*torch.mean(chamfer_dis_list)
-        #
-        #             loss = q_loss + c_loss  # 问题出在：fullpoint_from_depths中的点数越来越多
-        #             # print(iteration, 'q_loss', q_loss.item(), 'c_loss', c_loss.item(), loss.item())
-        #             loss.backward()
-        #             optimizer.step()
-        #             # scheduler.step()
-        #
-        #             loss_change = loss.item() - loss_last
-        #             loss_last = loss.item()
-        #             iteration += 1
-
-        return q_preds,t_preds
 
 def run_model(d, matcher,cfg ,vis_dict=None):
     metrics = {}
@@ -612,11 +684,15 @@ def run_model(d, matcher,cfg ,vis_dict=None):
 
 
 
-def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
-    dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
-    for i,pose1 in enumerate(poses):  # TODO batch形式
-        for j,pose2 in enumerate(poses):
-            dist_mat[i,j],_ = compute_RT_errors(pose1,pose2)
+def fps_optimize_views_from_test(poses, select_numbers=8,start_idx=0):
+    # dist_mat = np.zeros((poses.shape[0],poses.shape[0]))
+    time1 = time.time()
+    # for i,pose1 in enumerate(poses):
+    #     for j,pose2 in enumerate(poses):
+    #         dist_mat[i,j],_ = compute_RT_errors(pose1,pose2)
+    dist_mat = compute_R_errors_batch(poses,poses)
+
+    time2 = time.time()
     select_views = np.zeros((select_numbers,), dtype=int)
     view_idx = start_idx
     dist_to_set = dist_mat[:,view_idx]
@@ -624,7 +700,7 @@ def fps_optimize_views_from_test(poses, select_numbers=16,start_idx=0):
         select_views[i] = view_idx
         dist_to_set = np.minimum(dist_to_set,dist_mat[:,view_idx])
         view_idx = np.argmax(dist_to_set)
-
+    time3 = time.time()
     return select_views
 
 def compute_results(q_preds,t_preds,gt_poses):
@@ -720,7 +796,7 @@ def main(cfg):
                             feat_layer=cfg.feat_layer,
                             device=cfg.device)
 
-    q_preds, t_preds, gt_poses_for_result = [], [], []
+
     print(len(test_dataset))
     while global_step < cfg.max_iter:
         matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths = [], [], [], [], [], []
@@ -736,7 +812,7 @@ def main(cfg):
         iter_read_time += read_time
 
         if sample is not None:
-            if cfg.record_vis & (global_step>cfg.key_number):
+            if cfg.record_vis: # & (global_step>cfg.key_number):
                 vis_dict = {}
             else:
                 vis_dict = None
@@ -750,11 +826,14 @@ def main(cfg):
                  'rt_matrix': rt_matrixs[0],    # np array
                  'test_camera_K': test_camera_Ks[0],    # np array
                  'path':sample['path'],
-                 # 'depth':depths[0][0][0],
                  'keypoint_from_depth':keypoint_from_depths[0],     # np array
                  'fullpoint_from_depth':fullpoint_from_depths[0]}   # np array
         # frame: matches_3d,gt_pose,rt_matrix,camera_Ks
+        memory_time = time.time()
         memory_pool.refine_new_frame(frame,record_vis=cfg.record_vis,global_step=global_step,vis_dict=vis_dict)
+        iter_end_time = time.time()
+        print(f'memory_pool time cost {iter_end_time-memory_time}')     # 大约0.04s
+        print("Iteration {}".format(global_step),' time',iter_end_time-iter_start_time) # 大约0.08s
     memory_pool.eliminate_all_frames_and_compute_result()
 
 
@@ -768,7 +847,7 @@ if __name__ == '__main__':
     parser.add_argument('--ref_dir', type=str, default='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840')
     parser.add_argument('--test_dir', type=str, default='/root/autodl-tmp/shiqian/datasets/Ty_data')
     parser.add_argument('--feat_layer', type=str, default=19)
-    parser.add_argument('--max_iter',type=int, default=500)
+    parser.add_argument('--max_iter',type=int, default=800)
     parser.add_argument('--device',type=str,default='cuda:3')
     parser.add_argument('--dtype',default=torch.float32)
     parser.add_argument('--refine_mode',type=str,default='c')
@@ -777,10 +856,12 @@ if __name__ == '__main__':
     parser.add_argument('--record_vis',default=False,action='store_true')
     parser.add_argument('--view_number',type=int,default=10)
     parser.add_argument('--use_depth',default=True, action='store_true')
-    parser.add_argument('--use_full_depth',default=True, action='store_true')
+    parser.add_argument('--use_full_depth',default=False, action='store_true')  # 这个c++没写,一直关掉
     parser.add_argument('--gripper_point_path', type=str, default="./pointclouds/gripper.txt")
-    parser.add_argument('--add_noise',default=True, action='store_true')
-    parser.add_argument('--adjust',default=False, action='store_true')
+    parser.add_argument('--add_noise',default=False, action='store_true')   # 低精度模式下需要打开，但是有问题
+    parser.add_argument('--adjust',default=False, action='store_true')      # 低精度模式下需要打开，但是有问题
+    parser.add_argument('--rela_mode',default='gt',action='store_true')     # 高精度模式：gt #低精度模式下：pr，但是有问题
+    parser.add_argument('--use_cpp',default=True,action='store_true')
 
     cfg = parser.parse_args()
     main(cfg)
