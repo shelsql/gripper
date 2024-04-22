@@ -30,15 +30,15 @@ def save_features(
     rgbs = []
     masks = []
     for glob_rgb_path in tqdm(rgb_paths):
-        path = glob_rgb_path[:-4]
+        path = glob_rgb_path[:-7]
 
-        rgb_path = path + ".png"
-        mask_path = path + "_mask.exr"
+        rgb_path = path + "rgb.png"
+        mask_path = path + "id1.exr"
         
         #print(rgb_path)
         rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
         mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
-        mask = (mask >= 9).astype(int)
+        #mask = (mask >= 9).astype(int)
         
         rgbs.append(rgb)
         masks.append(mask)
@@ -108,8 +108,8 @@ def save_features(
     print(all_tokens.shape)
     print("Saving features...")
     for i in tqdm(range(N)):
-        path = rgb_paths[i][:-4]
-        feat_path = path + "_feats_%.2d.npy" % layer
+        path = rgb_paths[i][:-7]
+        feat_path = path + "feats_%.2d.npy" % layer
         np.save(feat_path, all_tokens[i].cpu().numpy())
 
     #torch.save(data_dict, "./dataset_exports/ref_840.pth")
@@ -125,5 +125,5 @@ for data_dir in data_dirs:
     for layer in layers:
         save_features(data_dir, layer, device)
 '''
-for data_dir in glob.glob("/root/autodl-tmp/shiqian/datasets/Ty_data/*"):
-    save_features(data_dir, 19, "cuda:1")
+for data_dir in glob.glob("/root/autodl-tmp/shiqian/code/render/final_20240419/*panda/0*"):
+    save_features(data_dir, 19, "cuda:2")
