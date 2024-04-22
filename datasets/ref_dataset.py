@@ -249,7 +249,7 @@ class SimLargeDataset(Dataset):
         print("Found %d subdirs in %s" % (len(self.subdirs), self.dataset_location))
         self.videos = glob.glob(dataset_location + "/*panda/0*")
         
-        print("Found %d videos in %s" % (self.videos, self.dataset_location))
+        print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
         
     def __getitem__(self, index):
         print('dataid',index)
