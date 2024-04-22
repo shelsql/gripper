@@ -233,3 +233,85 @@ class SimTrackDataset(Dataset):
     def __len__(self):
         return len(self.all_full_idx)
     
+
+class SimLargeDataset(Dataset):
+    def __init__(self,
+                 dataset_location="/root/autodl-tmp/shiqian/code/render/final_20240419",
+                 features=23
+                 ):
+        super().__init__()
+        print("Loading rendered dataset...")
+        self.features = features
+        self.dataset_location = dataset_location
+        #self.subdirs = glob.glob(dataset_location + "/*")
+        #Change back to this later
+        self.subdirs = glob.glob(dataset_location + "/*panda")
+        print("Found %d subdirs in %s" % (len(self.subdirs), self.dataset_location))
+        self.videos = glob.glob(dataset_location + "/*panda/0*")
+        
+        print("Found %d videos in %s" % (self.videos, self.dataset_location))
+        
+    def __getitem__(self, index):
+        print('dataid',index)
+        video_path = self.videos[index]
+        glob_paths = glob.glob(video_path + "/*rgb.png")
+        rgbs = []
+        depths = []
+        masks = []
+        c2ws = []
+        obj_poses = []
+        if self.features > 0:
+            feats = []
+        
+        camera_intrinsic_path = video_path + "/camera_intrinsics.json"
+        camera_intrinsic = json.loads(open(camera_intrinsic_path).read())
+        
+        for glob_rgb_path in glob_paths:
+            path = glob_rgb_path[:-8]
+        
+            rgb_path = path + "_rgb.png"
+            depth_path = path + "_depth1.exr"
+            mask_path = path + "_id1.exr"
+            c2w_path = path + "_c2w.npy"
+            obj_pose_path = path + "_objpose.npy"
+            
+            #print(rgb_path)
+            rgb = cv2.cvtColor(cv2.imread(rgb_path), cv2.COLOR_BGR2RGB)
+            depth = cv2.imread(depth_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
+            mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
+            c2w = np.load(c2w_path)
+            obj_pose = np.load(obj_pose_path)
+            if self.features > 0:
+                feat_path = path + "_feats_%.2d.npy" % self.features
+                feat = np.load(feat_path)
+                feats.append(feat)
+            
+            rgbs.append(rgb)
+            depths.append(depth)
+            masks.append(mask)
+            c2ws.append(c2w)
+            obj_poses.append(obj_pose)
+        rgbs = np.stack(rgbs, axis = 0)
+        depths = np.stack(depths, axis = 0)
+        masks = np.stack(masks, axis = 0)
+        c2ws = np.stack(c2ws, axis = 0)
+        obj_poses = np.stack(obj_poses, axis = 0)
+        if self.features > 0:
+            feats = np.stack(feats, axis = 0)
+        else:
+            feats = None
+        #print(depths.shape)
+        sample = {
+            "rgb": rgbs,
+            "depth": depths,
+            "mask": masks,
+            "c2w": c2ws,
+            "obj_pose": obj_poses,
+            "feat": feats,
+            "intrinsics": camera_intrinsic
+        }
+        
+        return sample
+    def __len__(self):
+        return len(self.videos)
+    
