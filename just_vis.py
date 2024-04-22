@@ -12,7 +12,7 @@ import sys
 from tqdm import tqdm
 
 from datasets.ty_datasets import PoseDataset, TrackingDataset
-from datasets.ref_dataset import ReferenceDataset, SimTrackDataset
+from datasets.ref_dataset import ReferenceDataset, SimTrackDataset, SimLargeDataset
 from torch.utils.data import DataLoader
 
 from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, save_pointcloud, transform_pointcloud, get_2dbboxes
@@ -150,6 +150,7 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = TrackingDataset(seqlen=8)
+    vis_dataset = SimLargeDataset(features=19)
     #vis_dataset = 
     ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=23)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
