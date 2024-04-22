@@ -779,8 +779,6 @@ class Dinov2Matcher:
                 dis = torch.exp(-(sorted_dis[i,j]**2)/200)
                 test_bags[indice] += dis
         '''
-                
-        
         for j in range(3):
             indices = sorted_indices[:,j]
             dis = torch.exp(-(sorted_dis[:,j]**2)/200)
@@ -797,7 +795,6 @@ class Dinov2Matcher:
             #test_bags_2[indices] += dis
             test_bags_2.scatter_add(0, indices, dis)
         '''
-            
         #print(test_bags[:20])
         #print(test_bags_2[:20])
 
