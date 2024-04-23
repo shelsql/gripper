@@ -13,7 +13,7 @@ from itertools import combinations
 
 feat_layer = 19
 S = 32
-results = np.loadtxt(f'results/memory32_key8_iter500_use_depth_no_full_no_adjust.txt')   # 1024,23
+results = np.loadtxt(f'results/memory/{30}.txt')   # 1024,23
 q_preds = results[:,:4]     # 1024,4
 t_preds = results[:,4:7]    # 1024,3
 gt_poses = results[:,7:23].reshape(-1,4,4)    # 1024,4,4
