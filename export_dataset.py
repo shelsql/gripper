@@ -58,7 +58,7 @@ def save_features(
 
     rgbs = rgbs / 255.0 # N, 3, H, W
     bboxes = get_2dbboxes(masks[:,0]) # B, 4
-    print(bboxes[:10])
+    #print(bboxes[:10])
     cropped_rgbs = torch.zeros((N, 3, img_size, img_size), device = device)
     cropped_masks = torch.zeros((N, 1, img_size, img_size), device = device)
     for b in range(N):
@@ -125,5 +125,5 @@ for data_dir in data_dirs:
     for layer in layers:
         save_features(data_dir, layer, device)
 '''
-for data_dir in glob.glob("/root/autodl-tmp/shiqian/code/render/final_20240419/*panda/0*"):
+for data_dir in glob.glob("/root/autodl-tmp/shiqian/code/render/reference_views/*"):
     save_features(data_dir, 19, "cuda:2")

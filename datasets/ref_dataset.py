@@ -234,10 +234,10 @@ class SimTrackDataset(Dataset):
         return len(self.all_full_idx)
     
 
-class SimLargeDataset(Dataset):
+class SimVideoDataset(Dataset):
     def __init__(self,
-                 dataset_location="/root/autodl-tmp/shiqian/code/render/final_20240419",
-                 features=23
+                 dataset_location="/root/autodl-tmp/shiqian/datasets/final_20240419",
+                 features=19
                  ):
         super().__init__()
         print("Loading rendered dataset...")
@@ -245,10 +245,9 @@ class SimLargeDataset(Dataset):
         self.dataset_location = dataset_location
         #self.subdirs = glob.glob(dataset_location + "/*")
         #Change back to this later
-        self.subdirs = glob.glob(dataset_location + "/*panda")
+        self.subdirs = glob.glob(dataset_location + "/*")
         print("Found %d subdirs in %s" % (len(self.subdirs), self.dataset_location))
-        self.videos = glob.glob(dataset_location + "/*panda/0*")
-        
+        self.videos = glob.glob(dataset_location + "/*/0*")
         print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
         
     def __getitem__(self, index):
@@ -301,6 +300,11 @@ class SimLargeDataset(Dataset):
         else:
             feats = None
         #print(depths.shape)
+        
+        metadata = json.loads(open(video_path + "/metadata.json").read())
+        obj_path = metadata["obj_path"]
+        ref_path = metadata["ref_path"]
+        
         sample = {
             "rgb": rgbs,
             "depth": depths,
@@ -308,7 +312,9 @@ class SimLargeDataset(Dataset):
             "c2w": c2ws,
             "obj_pose": obj_poses,
             "feat": feats,
-            "intrinsics": camera_intrinsic
+            "intrinsics": camera_intrinsic,
+            "obj_path": obj_path,
+            "ref_path": ref_path
         }
         
         return sample

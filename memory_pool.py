@@ -4,7 +4,7 @@ from torch.optim import lr_scheduler
 from utils.quaternion_utils import *
 import numpy as np
 from utils.spd import sample_points_from_mesh,compute_RT_errors
-from datasets.ref_dataset import ReferenceDataset, SimTestDataset, SimTrackDataset
+from datasets.ref_dataset import ReferenceDataset, SimTestDataset, SimTrackDataset, SimVideoDataset
 from datasets.ty_datasets import TrackingDataset
 from torch.utils.data import DataLoader
 import os

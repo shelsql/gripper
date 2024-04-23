@@ -12,7 +12,7 @@ import sys
 from tqdm import tqdm
 
 from datasets.ty_datasets import PoseDataset, TrackingDataset
-from datasets.ref_dataset import ReferenceDataset, SimTrackDataset, SimLargeDataset
+from datasets.ref_dataset import ReferenceDataset, SimTrackDataset, SimVideoDataset
 from torch.utils.data import DataLoader
 
 from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, save_pointcloud, transform_pointcloud, get_2dbboxes
@@ -21,7 +21,7 @@ random.seed(125)
 np.random.seed(125)
 torch.manual_seed(125)
 
-def run_model(d, refs, pointcloud, device, dname, sw=None):
+def run_model(d, pointcloud, device, dname, sw=None):
     metrics = {}
     
     
@@ -32,6 +32,9 @@ def run_model(d, refs, pointcloud, device, dname, sw=None):
     #npys = d['npys']
     #intrinsics = d['intrinsics']
     print(rgbs.shape, depths.shape, masks.shape)
+    
+    ref_path = d['ref_path']
+    ref_dataset = ReferenceDataset(ref_path, num_views=840, features=19)
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
@@ -150,13 +153,13 @@ def main(
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
     vis_dataset = TrackingDataset(seqlen=8)
-    vis_dataset = SimLargeDataset(features=19)
+    vis_dataset = SimVideoDataset(features=19)
     #vis_dataset = 
-    ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=23)
+    #ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=23)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
-    ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
+    #ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
-    refs = next(iter(ref_dataloader))
+    #refs = next(iter(ref_dataloader))
 
     global_step = 0
     
@@ -187,7 +190,7 @@ def main(
         #     print("got the sample", torch.sum(sample['vis_g']))
         
         if sample is not None:
-            _ = run_model(sample, refs, gripper_pointcloud, device, dname, sw=sw_t)
+            _ = run_model(sample, gripper_pointcloud, device, dname, sw=sw_t)
         else:
             print('sampling failed')
                   
