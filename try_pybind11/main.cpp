@@ -10,37 +10,6 @@ using namespace std;
 using namespace chrono;
 namespace py = pybind11;
 
-void UnitQuaternionRotatePoint(const double q[4], const double pt[3], double result[3]) {
-    const double t2 =  q[0] * q[1];
-    const double t3 =  q[0] * q[2];
-    const double t4 =  q[0] * q[3];
-    const double t5 = -q[1] * q[1];
-    const double t6 =  q[1] * q[2];
-    const double t7 =  q[1] * q[3];
-    const double t8 = -q[2] * q[2];
-    const double t9 =  q[2] * q[3];
-    const double t1 = -q[3] * q[3];
-    result[0] = double(2) * ((t8 + t1) * pt[0] + (t6 - t4) * pt[1] + (t3 + t7) * pt[2]) + pt[0];  // NOLINT
-    result[1] = double(2) * ((t4 + t6) * pt[0] + (t5 + t1) * pt[1] + (t9 - t2) * pt[2]) + pt[1];  // NOLINT
-    result[2] = double(2) * ((t7 - t3) * pt[0] + (t2 + t9) * pt[1] + (t5 + t8) * pt[2]) + pt[2];  // NOLINT
-}
-void QuaternionRotatePoint(const double q[4], const double pt[3], double result[3]) {
-    // 'scale' is 1 / norm(q).
-    const double scale = double(1) / sqrt(q[0] * q[0] +
-                                q[1] * q[1] +
-                                q[2] * q[2] +
-                                q[3] * q[3]);
-
-    // Make unit-norm version of q.
-    const double unit[4] = {
-            scale * q[0],
-            scale * q[1],
-            scale * q[2],
-            scale * q[3],
-    };
-
-    UnitQuaternionRotatePoint(unit, pt, result);
-}
 
 // 代价函数的计算模型，每次计算一个点的重投影误差（test）
 struct REPROJECTIONandKEY3D_COST {
@@ -369,12 +338,12 @@ py::tuple optimize_step1_nodepth(
 //}
 
 struct ADJUST_COST {
-    ADJUST_COST(              const double* match3d,  // 3  points in frame i
-                              const double* camera_params,     // 4 fx,cx,fy,cy 无所谓，反正都一样
+    ADJUST_COST(            const double* match3d,
+                            const double* camera_params,     // 4 fx,cx,fy,cy 无所谓，反正都一样
                               const double* depth,    // 360*640     depth image of frame j
                               const double* keypoint    // 3
     ) :
-             _match3d(match3d), _camera_params(camera_params),_depth(depth),_keypoint(keypoint)
+              _camera_params(camera_params),_depth(depth),_keypoint(keypoint),_match3d(match3d)
     {}
 
     // 残差的计算
@@ -385,17 +354,15 @@ struct ADJUST_COST {
             const T *const qj,
             const T *const tj,
             T *residual) const {
-        T key3d[3];
-        T key2d[2];
+
+
 
         T qi_inv[4];
         qi_inv[0] = qi[0];
-        for (int i=1;i<4;++i){
-            qi_inv[i] = -qi[i];
-        }
         T qj_inv[4];
         qj_inv[0] = qj[0];
         for (int i=1;i<4;++i){
+            qi_inv[i] = -qi[i];
             qj_inv[i] = -qj[i];
         }
 
@@ -404,23 +371,34 @@ struct ADJUST_COST {
         for (int i=0;i<3;++i) {
             keypoint_tmp[i] = T(_keypoint[i]);
         }
+
+        T match3d_tmp[3];
+        for (int i=0;i<3;++i){
+            match3d_tmp[i] = T(_match3d[i]);
+        }
+//        cout<<"qi1"<<ceres::Jet<double, 14>(qi[1]).a<<"qj1"<<ceres::Jet<double, 14>(qj[1]).a
+//        <<"qi2"<<ceres::Jet<double, 14>(qi[2]).a<<"qj2"<<ceres::Jet<double, 14>(qj[2]).a
+//                <<"qi3"<<ceres::Jet<double, 14>(qi[3]).a<<"qj3"<<ceres::Jet<double, 14>(qj[3]).a
+//                <<"qi4"<<ceres::Jet<double, 14>(qi[4]).a<<"qj4"<<ceres::Jet<double, 14>(qj[4]).a<<endl;
+
+
         // 左乘Ti逆
-        ceres::QuaternionRotatePoint(qi_inv,keypoint_tmp,key3d);
-        T t_tmp1[3];
-        ceres::QuaternionRotatePoint(qi_inv,ti,t_tmp1);
-        key3d[0] -= t_tmp1[0]; key3d[1] -= t_tmp1[1]; key3d[2] -= t_tmp1[2];
+//        ceres::QuaternionRotatePoint(qi_inv,keypoint_tmp,key3d);
+//        T t_tmp1[3];
+//        ceres::QuaternionRotatePoint(qi_inv,ti,t_tmp1);
+//        key3d[0] -= t_tmp1[0]; key3d[1] -= t_tmp1[1]; key3d[2] -= t_tmp1[2];
         // 调试
 //        ceres::QuaternionRotatePoint(qi,key3d,key3d);
 //        key3d[0] += ti[0];key3d[1] += ti[1];key3d[2] += ti[2];
 //        cout<<"diff"<<ceres::Jet<double, 14>(key3d[0]-keypoint_tmp[0])<<endl<<ceres::Jet<double, 14>(key3d[0]-keypoint_tmp[0])<<endl;
         // 调试
 
-
-
+        T key3d[3];
         // 左乘Tj
-        ceres::QuaternionRotatePoint(qj,key3d,key3d);
+        ceres::QuaternionRotatePoint(qj,match3d_tmp,key3d);
         key3d[0]+=tj[0];key3d[1]+=tj[1];key3d[2]+=tj[2];
 
+        T key2d[2];
         // 投影
         key2d[0] = (key3d[0]/key3d[2])*T(_camera_params[0]) + T(_camera_params[1]);
         key2d[1] = (key3d[1]/key3d[2])*T(_camera_params[2]) + T(_camera_params[3]);
@@ -428,8 +406,8 @@ struct ADJUST_COST {
         // 用frame j的深度图恢复到3d
         T key3d1[3];
 
-        int idx = ceres::Jet<double, 14>(key2d[0]).a;
-        int idy = ceres::Jet<double, 14>(key2d[1]).a;
+        int idx = ceres::Jet<double,14>(key2d[0]).a;
+        int idy = ceres::Jet<double,14>(key2d[1]).a;
         if (idx > 639){
             idx = 639;
         }
@@ -442,11 +420,13 @@ struct ADJUST_COST {
         if(idy<0){
             idy=0;
         }
-        cout<<idx<<"and"<<idy<<endl;
-        key3d1[2] = T(_depth[idy*640+idx]);
-        key3d1[0] = key3d1[2]*(key2d[0]- T(_camera_params[1]))/ T(_camera_params[0]);
-        key3d1[1] = key3d1[2]*(key2d[1]- T(_camera_params[3]))/ T(_camera_params[2]);
-        cout<<"key3d1"<<ceres::Jet<double, 14>(key3d1[2]).a<<"and"<<ceres::Jet<double, 14>(key3d1[0]).a<<"and"<<ceres::Jet<double, 14>(key3d1[1]).a<<endl;
+//        cout<<idx<<"and"<<idy<<endl;
+
+        T depth_tmp = T(_depth[idy*640+idx]);
+        key3d1[2] = depth_tmp;
+        key3d1[0] = depth_tmp*(key2d[0]- T(_camera_params[1]))/ T(_camera_params[0]);
+        key3d1[1] = depth_tmp*(key2d[1]- T(_camera_params[3]))/ T(_camera_params[2]);
+//        cout<<"key3d1"<<ceres::Jet<double, 14>(key3d1[2]).a<<"and"<<ceres::Jet<double, 14>(key3d1[0]).a<<"and"<<ceres::Jet<double, 14>(key3d1[1]).a<<endl;
 
 
         T key3d2[3];
@@ -458,32 +438,32 @@ struct ADJUST_COST {
 
         T key3d3[3];
         // 左乘Ti
-        ceres::QuaternionRotatePoint(qi,key3d1,key3d3);
+        ceres::QuaternionRotatePoint(qi,key3d2,key3d3);
         key3d3[0]+=ti[0];key3d3[1]+=ti[1];key3d3[2]+=ti[2];
-        cout<<"key3d3"<<ceres::Jet<double, 14>(key3d3[2]).a<<"and"<<ceres::Jet<double, 14>(key3d3[0]).a<<"and"<<ceres::Jet<double, 14>(key3d3[1]).a<<endl;
+//        cout<<"key3d3"<<ceres::Jet<double, 14>(key3d3[2]).a<<"and"<<ceres::Jet<double,14>(key3d3[0]).a<<"and"<<ceres::Jet<double, 14>(key3d3[1]).a<<endl;
+
+
+
+        // 用深度图计算keypoint的距离
+        residual[0] = 1000.0*(key3d3[0] - T(keypoint_tmp[0]));
+        residual[1] = 1000.0*(key3d3[1] - T(keypoint_tmp[1]));
+        residual[2] = 1000.0*(key3d3[2] - T(keypoint_tmp[2]));
+//        cout<<'x'<<ceres::Jet<double, 14>(residual[0]).a<<'y'<<ceres::Jet<double, 14>(residual[1]).a<<'z'<<ceres::Jet<double, 14>(residual[2]).a
+//        <<endl;
+
 
         if(ceres::Jet<double, 14>(_depth[idy*640+idx]).a <= 0.0){
-            // 用深度图计算keypoint的距离
-            residual[0] = 0.0*(key3d3[0] - T(keypoint_tmp[0]));
-            residual[1] = 0.0*(key3d3[1] - T(keypoint_tmp[1]));
-            residual[2] = 0.0*(key3d3[2] - T(keypoint_tmp[2]));
+            residual[0] = T(0.0);
+            residual[1] = T(0.0);
+            residual[2] = T(0.0);
         }
-        else{
-            // 用深度图计算keypoint的距离
-            residual[0] = 1.0*(key3d3[0] - T(keypoint_tmp[0]));
-            residual[1] = 1.0*(key3d3[1] - T(keypoint_tmp[1]));
-            residual[2] = 1.0*(key3d3[2] - T(keypoint_tmp[2]));
-        }
-
-
-
         return true;
     }
 
-    const double* _match3d;
     const double* _camera_params;
     const double* _depth;
     const double* _keypoint;
+    const double* _match3d;
 };
 
 py::tuple adjust(
@@ -510,14 +490,7 @@ py::tuple adjust(
         }
     }
 
-    double q_tmp[4];
-    for(int i=0;i<4;++i){
-        q_tmp[i] = q_preds[0][i];
-    }
-    double t_tmp[3];
-    for(int i=0;i<3;++i){
-        t_tmp[i] = t_preds[0][i];
-    }
+
 
     unsigned long num_points;
 
@@ -533,9 +506,18 @@ py::tuple adjust(
     for (int i=0;i<num_frames;i++) {
         num_points = match3ds[i].size();
         for (int j=0;j<num_frames;j++){
-//            if(i==j){
-//                continue;
+            if(i==j){
+                continue;
+            }
+//            double q_tmp[4];
+//            for(int m=0;m<4;++m){
+//                q_tmp[m] = q_preds[j][m];
 //            }
+//            double t_tmp[3];
+//            for(int m=0;m<3;++m){
+//                t_tmp[m] = t_preds[j][m];
+//            }
+
             for(int k=0;k<num_points;++k){
                 problem.AddResidualBlock(     // 向问题中添加误差项
                         // 使用自动求导，模板参数：误差类型，输出维度，输入维度，维数要与前面struct中一致
@@ -544,15 +526,18 @@ py::tuple adjust(
                                                 camera_ks[i].data(),
                                                 depths[j].data(),
                                                 keypoint[i][k].data()
+//                                                q_tmp,
+//                                                t_tmp
                                 )
                         ),
-                        nullptr,//loss_function,            // 核函数，这里不使用，为空
+                        loss_function,            // 核函数，这里不使用，为空
                         &q_data[i*4],
                         &t_data[i*3],
-//                        &q_data[j*4],
-//                        &t_data[j*3]
-                            q_tmp,
-                            t_tmp
+                        &q_data[j*4],
+                        &t_data[j*3]
+
+//                            q_tmp,
+//                            t_tmp
                 );
             }
         }
@@ -562,7 +547,7 @@ py::tuple adjust(
     // 配置求解器
     ceres::Solver::Options options;     // 这里有很多配置项可以填
     options.linear_solver_type = ceres::DENSE_NORMAL_CHOLESKY;  // 增量方程如何求解
-    options.minimizer_progress_to_stdout = false;   //
+    options.minimizer_progress_to_stdout = true;   //
 
     ceres::Solver::Summary summary;                // 优化信息
     chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
