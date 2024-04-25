@@ -595,7 +595,8 @@ class MemoryPool():
         q_preds = matrix_to_quaternion(pred_poses[:, :3, :3]).requires_grad_()
         t_preds = pred_poses[:, :3, 3].requires_grad_()
         test_camera_Ks = torch.stack([torch.tensor(self.test_camera_Ks[i], dtype=self.cfg.dtype, device=self.cfg.device) for i in views_idx_for_opt])  # b,3,3
-
+        self.q_before_opt.append(q_preds[0].detach().cpu().numpy())
+        self.t_before_opt.append(t_preds[0].detach().cpu().numpy())
         matches_3ds_within_3sigma = []
         keypoint_from_depths_within_3sigma = []
         for i in range(len(matches_3ds)):
@@ -643,10 +644,12 @@ class MemoryPool():
             q_preds = torch.tensor(q_preds,device=self.cfg.device,dtype=self.cfg.dtype).reshape(-1,4)
             t_preds = torch.tensor(t_preds, device=self.cfg.device, dtype=self.cfg.dtype).reshape(-1,3)
         else:
+            # q_pred = q_preds[0].clone().requires_grad_()
+            # t_pred = t_preds[0].clone().requires_grad_()
             optimizer = torch.optim.Adam([q_preds, t_preds], lr=1e-3)
             iteration = 0
             qt_change = 1
-            qt_last = torch.cat([q_preds, t_preds],dim=1).clone().detach()
+            qt_last = torch.cat([q_preds, t_preds],dim=-1).clone().detach()
 
 
             qt_pred_for_vis_frame = []
@@ -664,12 +667,11 @@ class MemoryPool():
                         if i==j:
                             continue
 
-                        keypoint_from_depth_i =keypoint_from_depths_within_3sigma[i] #torch.zeros_like(matches_3ds_within_3sigma[i][:, 3:6])
-                        # keypoint_from_depth_i[:, 2] = depths[i][matches_3ds_within_3sigma[i][:, 2].to(dtype=torch.int32), matches_3ds_within_3sigma[i][:, 1].to(dtype=torch.int32)]
-                        # keypoint_from_depth_i[:, 0] = (matches_3ds_within_3sigma[i][:, 1] - test_camera_Ks[i][0, 2]) * keypoint_from_depth_i[:, 2] / test_camera_Ks[i][0, 0]
-                        # keypoint_from_depth_i[:, 1] = (matches_3ds_within_3sigma[i][:, 2] - test_camera_Ks[i][1, 2]) * keypoint_from_depth_i[:, 2] /  test_camera_Ks[i][1, 1]
+                        keypoint_from_depth_i =keypoint_from_depths_within_3sigma[i]
 
-                        key3d = quaternion_apply(quaternion_invert(q_preds[i]),keypoint_from_depth_i) - quaternion_apply(quaternion_invert(q_preds[i]),t_preds[i])
+                        # key3d_debug = quaternion_apply(quaternion_invert(q_preds[i]),keypoint_from_depth_i.clone().detach()) - quaternion_apply(quaternion_invert(q_preds[i]),t_preds[i]) # TODO 问题出在这个和key3d差别较大，为什么？太特么奇怪了
+
+                        key3d = matches_3ds_within_3sigma[i][:,3:]
 
                         key3d1 = quaternion_apply(q_preds[j],key3d) + t_preds[j]
 
@@ -678,7 +680,7 @@ class MemoryPool():
                         keypoint_from_depth_j = torch.zeros_like(matches_3ds_within_3sigma[i][:, 3:6])
 
                         tmp = depths[j][torch.clip(proj_2d[:,1].to(dtype=torch.int32),0,359), torch.clip(proj_2d[:,0].to(dtype=torch.int32),0,639)]
-                        depth_mask = tmp<0
+                        depth_mask = tmp>0
                         keypoint_from_depth_j[:, 2] = tmp.clone()
                         keypoint_from_depth_j[:, 0] = (proj_2d[:,0] - test_camera_Ks[i][0, 2]) * tmp.clone() /test_camera_Ks[i][0, 0]
                         keypoint_from_depth_j[:, 1] = (proj_2d[:,1] - test_camera_Ks[i][ 1, 2]) * tmp.clone() /  test_camera_Ks[i][1, 1]
@@ -688,35 +690,38 @@ class MemoryPool():
                         key3d3 = quaternion_apply(q_preds[i],key3d2) + t_preds[i]
 
                         dis = torch.norm((key3d3 - keypoint_from_depth_i)[[depth_mask]],dim=-1)
+                        print(len(dis))
 
-                        mean = torch.mean(dis)
-                        std = torch.std(dis)
-                        sigma_mask = (dis >= mean - std) & (dis <= mean + std)
-                        dis_one_loss=torch.mean(dis[sigma_mask])
-                        dis_one_loss.backward()
+                        # mean = torch.mean(dis)
+                        # std = torch.std(dis)
+                        # sigma_mask = (dis >= mean - std) & (dis <= mean + std)
+                        # dis_one_loss=torch.mean(dis[sigma_mask])
+                        # dis_one_loss.backward()
 
-                        # dis_list.append(dis)
+                        dis_list.append(dis)
 
 
-                # dis_list = torch.cat(dis_list,dim=0)
-                # mean = torch.mean(dis_list)
-                # std = torch.std(dis_list)
-                # sigma_mask = (dis_list >= mean - std) & (dis_list <= mean + std)
+                dis_list = torch.cat(dis_list,dim=0)
+                mean = torch.mean(dis_list)
+                std = torch.std(dis_list)
+                sigma_mask = (dis_list >= mean - std) & (dis_list <= mean + std)
                 q_loss = 1e5 * (1 - torch.norm(q_preds,dim=-1).mean()) ** 2
-                # dis_loss = torch.mean(dis_list[sigma_mask])
-                # loss = q_loss + dis_loss
+                dis_loss = torch.mean(dis_list[sigma_mask])
+                loss = q_loss + dis_loss
                 # print(iteration, 'q_loss', q_loss.item(), 'c_loss', c_loss.item(), loss.item())
-                q_loss.backward()
+                loss.backward()
                 optimizer.step()
                 # scheduler.step()
-                qt_now = torch.cat([q_preds, t_preds], dim=1).clone().detach()
+                qt_now = torch.cat([q_preds, t_preds],dim=-1).clone().detach()
                 qt_change = torch.mean(qt_now - qt_last)
                 qt_last = qt_now
                 iteration += 1
             print("iteration of adjust", iteration)
-        if self.cfg.record_vis:
-            qt_pred_for_vis_seq_adjust.append(qt_pred_for_vis_frame)
+            if self.cfg.record_vis:
+                qt_pred_for_vis_seq_adjust.append(qt_pred_for_vis_frame)
 
+        # q_preds[0] = q_pred.detach()
+        # t_preds[0] = t_pred.detach()
         return q_preds, t_preds
 
 
@@ -1139,19 +1144,19 @@ if __name__ == '__main__':
     parser.add_argument('--ref_dir', type=str, default='/root/autodl-tmp/shiqian/code/gripper/ref_views/franka_69.4_840')
     parser.add_argument('--test_dir', type=str, default='/root/autodl-tmp/shiqian/datasets/Ty_data')
     parser.add_argument('--feat_layer', type=str, default=19)
-    parser.add_argument('--max_iter',type=int, default=800)
+    parser.add_argument('--max_iter',type=int, default=400)
     parser.add_argument('--device',type=str,default='cuda:3')
     parser.add_argument('--dtype',default=torch.float32)
     parser.add_argument('--refine_mode',type=str,default='c')
     parser.add_argument('--max_number',type=int, default=32)
     parser.add_argument('--key_number',type=int,default=8)
-    parser.add_argument('--record_vis',default=False ,action='store_true')
+    parser.add_argument('--record_vis',default=True ,action='store_true')
     parser.add_argument('--view_number',type=int,default=10)
     parser.add_argument('--use_depth',default=True, action='store_true')
     parser.add_argument('--use_full_depth',default=False, action='store_true')  # 这个c++没写,一直关掉
     parser.add_argument('--gripper_point_path', type=str, default="./pointclouds/gripper.txt")
     parser.add_argument('--add_noise',default=False, action='store_true')   # 低精度模式下需要打开，但是有问题
-    parser.add_argument('--adjust',default=True, action='store_true')      # 低精度模式下需要打开，但是有问题
+    parser.add_argument('--adjust',default=False, action='store_true')      # 低精度模式下需要打开，但是有问题
     parser.add_argument('--rela_mode',default='gt',action='store_true',help='gt or pr')     # 高精度模式：gt #低精度模式下：pr，但是有问题
     parser.add_argument('--use_cpp',default=True,action='store_true')
     parser.add_argument('--single_opt',default=False,action='store_true')   # 单帧优化
