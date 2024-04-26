@@ -1051,7 +1051,7 @@ def main_sim(cfg):
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
     ref_dataset = ReferenceDataset(dataset_location=cfg.ref_dir, num_views=840, features=cfg.feat_layer)
-    sim_dataset = SimVideoDataset(features=19)
+    sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
@@ -1065,8 +1065,8 @@ def main_sim(cfg):
     # ref_images = torch.concat([ref_rgbs[0], ref_depths[0, :, 0:1], ref_masks[0, :, 0:1]], axis=1)
     # print(ref_images.shape)
     global_step = 0
-    gripper_path = "/root/autodl-tmp/shiqian/code/gripper/franka_hand_obj/franka_hand.obj"
-    pointcloud_path = "./pointclouds/gripper.txt"
+    gripper_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/model.obj" % cfg.gripper
+    pointcloud_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/sampled_4096.txt" % cfg.gripper
     if not os.path.exists(pointcloud_path):
         gripper_pointcloud = sample_points_from_mesh(gripper_path, fps=True, n_pts=8192)
     else:
@@ -1161,6 +1161,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_cpp',default=True,action='store_true')
     parser.add_argument('--single_opt',default=False,action='store_true')   # 单帧优化
     parser.add_argument('--init',default='rela')        # 不要改
+    
+    parser.add_argument('--gripper', type=str, default="panda")
 
     cfg = parser.parse_args()
     # main(cfg)
