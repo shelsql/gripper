@@ -972,7 +972,7 @@ def main(cfg):
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
     ref_dataset = ReferenceDataset(dataset_location=cfg.ref_dir, num_views=840, features=cfg.feat_layer)
-    sim_dataset = SimLargeDataset(features=19)
+    sim_dataset = SimVideoDataset(features=19)
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
@@ -1051,7 +1051,7 @@ def main_sim(cfg):
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
     ref_dataset = ReferenceDataset(dataset_location=cfg.ref_dir, num_views=840, features=cfg.feat_layer)
-    sim_dataset = SimLargeDataset(features=19)
+    sim_dataset = SimVideoDataset(features=19)
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
@@ -1083,7 +1083,7 @@ def main_sim(cfg):
     while global_step < cfg.max_iter:
         global_step += 1
         sim = next(sim_loader)
-
+        single_frame_rts = []
         for i in range(len(sim['rgb'][0])):
             sim_frame = {
                 'rgb': sim['rgb'][:,i:i+1,...],
@@ -1163,5 +1163,5 @@ if __name__ == '__main__':
     parser.add_argument('--init',default='rela')        # 不要改
 
     cfg = parser.parse_args()
-    main(cfg)
-    # main_sim(cfg)
+    # main(cfg)
+    main_sim(cfg)

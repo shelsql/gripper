@@ -237,23 +237,32 @@ class SimTrackDataset(Dataset):
 class SimVideoDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/datasets/final_20240419",
+                 gripper="panda",
                  features=19
                  ):
         super().__init__()
         print("Loading rendered dataset...")
         self.features = features
-        self.dataset_location = dataset_location
+        self.dataset_location = dataset_location + "/" + gripper
         #self.subdirs = glob.glob(dataset_location + "/*")
         #Change back to this later
-        self.subdirs = glob.glob(dataset_location + "/*")
+        self.gripper = gripper
+        self.subdirs = glob.glob(self.dataset_location + "/videos/*")
         print("Found %d subdirs in %s" % (len(self.subdirs), self.dataset_location))
-        self.videos = glob.glob(dataset_location + "/*/0*")
+        self.videos =[]
+        for subdir in self.subdirs:
+            self.videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
         print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
+        
+        #self.obj_path = dataset_location + "/model/model.obj"
+        #self.ref_path = "/root/autodl-tmp/shiqian/datasets/reference_views/" + gripper
         
     def __getitem__(self, index):
         print('dataid',index)
         video_path = self.videos[index]
-        glob_paths = glob.glob(video_path + "/*rgb.png")
+        vid_type = video_path.split("/")[-2]
+        vid_num = video_path.split("/")[-1]
+        glob_paths = sorted(glob.glob(video_path + "/*rgb.png"))
         rgbs = []
         depths = []
         masks = []
@@ -301,10 +310,8 @@ class SimVideoDataset(Dataset):
             feats = None
         #print(depths.shape)
         
-        metadata = json.loads(open(video_path + "/metadata.json").read())
-        obj_path = metadata["obj_path"]
-        ref_path = metadata["ref_path"]
-        
+        #print("vid_type:", vid_type)
+        #print("vid_num:", vid_num)
         sample = {
             "rgb": rgbs,
             "depth": depths,
@@ -313,8 +320,10 @@ class SimVideoDataset(Dataset):
             "obj_pose": obj_poses,
             "feat": feats,
             "intrinsics": camera_intrinsic,
-            "obj_path": obj_path,
-            "ref_path": ref_path
+            
+            "gripper": self.gripper,
+            "vid_type": vid_type,
+            "vid_num": vid_num
         }
         
         return sample
