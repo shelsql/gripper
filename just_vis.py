@@ -24,17 +24,12 @@ torch.manual_seed(125)
 def run_model(d, pointcloud, device, dname, sw=None):
     metrics = {}
     
-    
-    rgbs = torch.Tensor(d['rgb']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
-    depths = torch.Tensor(d['depth']).float().permute(0, 1, 4, 2, 3)
-    masks = torch.Tensor(d['mask']).float().permute(0, 1, 4, 2, 3)
-    #kptss = d['kptss']
-    #npys = d['npys']
-    #intrinsics = d['intrinsics']
-    print(rgbs.shape, depths.shape, masks.shape)
-    
-    ref_path = d['ref_path']
-    ref_dataset = ReferenceDataset(ref_path, num_views=840, features=19)
+    rgbs = torch.Tensor(d['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
+    depths = torch.Tensor(d['depths']).float().unsqueeze(2)
+    masks = torch.Tensor(d['masks']).float().permute(0, 1, 4, 2, 3)
+    kptss = d['kptss']
+    npys = d['npys']
+    intrinsics = d['intrinsics']
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
@@ -152,10 +147,8 @@ def main(
     print('model_name', model_name)
     
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    vis_dataset = TrackingDataset(seqlen=8)
-    vis_dataset = SimVideoDataset(features=19)
-    #vis_dataset = 
-    #ref_dataset = ReferenceDataset(dataset_location="./ref_views/franka_69.4_840", features=23)
+    vis_dataset = TrackingDataset()
+    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
     #ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
