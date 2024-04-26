@@ -13,3 +13,4 @@ dataset_exports/
 ref_views/
 test_views/
 *.npy
+vis_results/
