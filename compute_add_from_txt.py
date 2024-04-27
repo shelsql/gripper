@@ -11,12 +11,15 @@ from itertools import combinations
 # dia = point_cloud_diameter(gripper_pointcloud)
 # dia = 0.21452632541743355
 
-feat_layer = 19
-S = 32
-results = np.loadtxt(f'results/memory/400.txt')   # 1024,23
-q_preds = results[:,:4]     # 1024,4
-t_preds = results[:,4:7]    # 1024,3
-gt_poses = results[:,7:23].reshape(-1,4,4)    # 1024,4,4
+results_total = []
+for i in range(1,2):
+    results = np.loadtxt(f'results/memory/panda_{i}_new.txt')   # 1024,23
+    results_total.append(results)
+
+results_total = np.concatenate(results_total,axis=0)
+q_preds = results_total[:,:4]     # 1024,4
+t_preds = results_total[:,4:7]    # 1024,3
+gt_poses = results_total[:,7:23].reshape(-1,4,4)    # 1024,4,4
 gripper_pointcloud = read_pointcloud("./pointclouds/gripper.txt")   # 8192,3
 
 x = np.linspace(0,0.1,1000)
@@ -37,8 +40,8 @@ preds = np.zeros((q_preds.shape[0],4,4))
 preds[:,:3,:3] = np.array(quaternion_to_matrix(torch.tensor(q_preds)))
 preds[:,:3,3] = t_preds
 preds[:,3,3] = 1
-metrics = compute_auc_all(preds,np.linalg.inv(gt_poses),gripper_pointcloud)
-print(metrics)
+# metrics = compute_auc_all(preds,np.linalg.inv(gt_poses),gripper_pointcloud)
+# print(metrics)
 
 
 
@@ -59,10 +62,9 @@ for i in range(gt_poses.shape[0]):
     T2 = preds[i,:3, 3]
 
     R = R1 @ R2.transpose()
-    theta = np.arccos((np.trace(R) - 1)/2) * 180/np.pi
+    theta = np.arccos(np.clip((np.trace(R) - 1)/2,-1,1)) * 180/np.pi
     shift = np.linalg.norm(T1-T2) * 100
 
-    theta = min(theta, np.abs(180 - theta))
     r_errors.append(theta)
     t_errors.append(shift)
 
