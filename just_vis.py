@@ -15,21 +15,24 @@ from datasets.ty_datasets import PoseDataset, TrackingDataset
 from datasets.ref_dataset import ReferenceDataset, SimTrackDataset, SimVideoDataset
 from torch.utils.data import DataLoader
 
-from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, save_pointcloud, transform_pointcloud, get_2dbboxes
+from utils.spd import sample_points_from_mesh, depth_map_to_pointcloud, read_pointcloud
+from utils.spd import save_pointcloud, transform_pointcloud, get_2dbboxes
+
+from matcher import Dinov2Matcher
 
 random.seed(125)
 np.random.seed(125)
 torch.manual_seed(125)
 
-def run_model(d, pointcloud, device, dname, sw=None):
+def run_model(d, refs, pointcloud, device, dname, sw=None):
     metrics = {}
     
-    rgbs = torch.Tensor(d['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
-    depths = torch.Tensor(d['depths']).float().unsqueeze(2)
-    masks = torch.Tensor(d['masks']).float().permute(0, 1, 4, 2, 3)
-    kptss = d['kptss']
-    npys = d['npys']
-    intrinsics = d['intrinsics']
+    rgbs = torch.Tensor(d['rgb']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
+    depths = torch.Tensor(d['depth']).float().unsqueeze(2)
+    masks = torch.Tensor(d['mask']).float().permute(0, 1, 4, 2, 3)
+    #kptss = d['kptss']
+    #npys = d['npys']
+    #intrinsics = d['intrinsics']
     
     ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3) # B, S, C, H, W
     ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3)
@@ -146,18 +149,27 @@ def main(
     model_name = model_name + '_' + model_date
     print('model_name', model_name)
     
+    gripper = "panda"
+    ref_path = "/root/autodl-tmp/shiqian/datasets/reference_views/%s" % gripper
+    pc_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/sampled_4096.txt" % gripper
     writer_t = SummaryWriter(log_dir + '/' + model_name + '/t', max_queue=10, flush_secs=60)
-    vis_dataset = TrackingDataset()
-    ref_dataset = ReferenceDataset(dataset_location="./render_lowres")
+    vis_dataset = SimVideoDataset(gripper=gripper, features = 19)
+    ref_dataset = ReferenceDataset(dataset_location=ref_path, features = 19)
     vis_dataloader = DataLoader(vis_dataset, batch_size=B, shuffle=shuffle)
-    #ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
+    ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=shuffle)
     iterloader = iter(vis_dataloader)
-    #refs = next(iter(ref_dataloader))
+    refs = next(iter(ref_dataloader))
 
     global_step = 0
     
-    gripper_path = "./franka_hand_obj/franka_hand.obj"
-    gripper_pointcloud = sample_points_from_mesh(gripper_path, n_pts=8192)
+    ##gripper_path = "./franka_hand_obj/franka_hand.obj"
+    #gripper_pointcloud = sample_points_from_mesh(gripper_path, n_pts=8192)
+    gripper_pointcloud = read_pointcloud(pc_path)
+    
+    matcher = Dinov2Matcher(ref_dir=ref_path, refs=refs,
+                            model_pointcloud=gripper_pointcloud,
+                            feat_layer=19,
+                            device="cuda:0")
 
     while global_step < max_iters:
 
@@ -183,7 +195,7 @@ def main(
         #     print("got the sample", torch.sum(sample['vis_g']))
         
         if sample is not None:
-            _ = run_model(sample, gripper_pointcloud, device, dname, sw=sw_t)
+            _ = run_model(sample, refs, gripper_pointcloud, device, dname, sw=sw_t)
         else:
             print('sampling failed')
                   

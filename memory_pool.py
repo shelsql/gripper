@@ -61,9 +61,10 @@ class MemoryPool():
         self.gt_poses.insert(0,frame['gt_pose'])            # np array
         self.paths.insert(0,frame['path'])
         if self.initial_pose is None:
-            self.initial_pose = frame['gt_pose']  # np array
+            self.initial_pose = frame['gt_pose']  # np array  gt cam2obj for frame 0
         if not self.cfg.add_noise:
             self.relative_poses.insert(0, frame['gt_pose'] @ np.linalg.inv(self.initial_pose))
+            # 这个东西左乘 cam2obj_0 得到 cam2obj_i
         else:
             noise_r = np.eye(3)
             random_rotation = scipy.spatial.transform.Rotation.from_rotvec(np.random.randn(3) * 0.1)    # 0.1=5度
@@ -239,13 +240,17 @@ class MemoryPool():
         time1 = time.time()
 
         if self.cfg.rela_mode == "gt":        # 高精度时，使用相对于数据集第一帧的pose 计算相对pose 来优化
+            # 8, 4, 4 相对于全局第一帧
             relative_poses_tmp = torch.stack([torch.tensor(self.relative_poses[i],dtype=self.cfg.dtype,device=self.cfg.device) for i in views_idx_for_opt])                # b,4,4
+            #这些东西左乘cam2obj_0 得到 cam2obj_i
             q_relatives = matrix_to_quaternion(relative_poses_tmp[:, :3, :3])  # b,4
             t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
-            q_rela = q_relatives[0]
+            q_rela = q_relatives[0] # 刚读进来
             t_rela = t_relatives[0]
         else:                                   # 低精度时，使用pred_pose 计算相对pose 来优化
+            # obj2cam 
             relative_poses_tmp = torch.stack([torch.inverse(torch.tensor(self.pred_poses[i],dtype=self.cfg.dtype,device=self.cfg.device)) for i in views_idx_for_opt])                # b,4,4
+            # obj2cam
             q_relatives = matrix_to_quaternion(relative_poses_tmp[:, :3, :3])  # b,4
             t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
             q_rela = q_relatives[0]
@@ -269,6 +274,7 @@ class MemoryPool():
             #     quaternion_invert(q_relatives[i]), t_relatives[i])
             # pred_3dkey = quaternion_apply(q_rela, pred_3dkey) + t_rela
             pred_3dkey = quaternion_apply(q_pred_tmp, matches_3ds[i][:, 3:]) + t_pred_tmp
+            #第i个关键帧的3D pt 从obj space转到 新进来一帧的
 
             if self.cfg.use_depth:
                 key3d_dis = torch.norm(keypoint_from_depths[i] - pred_3dkey, dim=-1)
@@ -287,6 +293,7 @@ class MemoryPool():
             proj_2d = (torch.matmul(test_camera_Ks[i], pred_3dkey.transpose(1, 0)) / pred_3dkey.transpose(1, 0)[2,
                                                                                      :]).transpose(1, 0)[:,:2]  # 220,2
             reproj_dis = torch.norm(fact_2d - proj_2d, dim=1)  # 220,
+            #fact2d i match3d 图像上的2D坐标
             mean = reproj_dis.mean()
             std = reproj_dis.std()
             within_3sigma_2d = (reproj_dis >= mean-1*std) & (reproj_dis <= mean+1*std)
@@ -363,8 +370,8 @@ class MemoryPool():
                     reproj_dis = torch.norm(matches_3ds_within_3sigma[i][:, 1:3] - proj_2d, dim=1)  # 220,
                     reproj_dis_list.append(reproj_dis)
                 reproj_dis_list = torch.cat(reproj_dis_list, dim=0)
-                q_loss = 1e5 * (1 - torch.norm(q_pred)) ** 2
-                reproj_loss = torch.mean(reproj_dis_list)
+                q_loss = 1e5 * (1 - torch.norm(q_pred)) ** 2 #quaternion
+                reproj_loss = torch.mean(reproj_dis_list) # proj 2d fact 2d
                 # c_loss = 1000*torch.mean(chamfer_dis_list)
                 if self.cfg.use_depth:
                     key3d_dis_list = torch.cat(key3d_dis_list,dim=0)
@@ -725,7 +732,7 @@ class MemoryPool():
         return q_preds, t_preds
 
 
-def run_model(d, matcher,cfg ,vis_dict=None):
+def run_model(d, matcher, step,cfg ,vis_dict=None):
     metrics = {}
     rgbs = torch.Tensor(d['rgb'])[0].float().permute(0, 3, 1, 2).to(cfg.device)  # B, C, H, W
     depths = torch.Tensor(d['depth'])[0].float().permute(0, 3, 1, 2).to(cfg.device)
@@ -762,7 +769,7 @@ def run_model(d, matcher,cfg ,vis_dict=None):
             'feat': d['feat'][0, i:i + 1],
             'intrinsics': d['intrinsics']
         }
-        matches_3d_list = matcher.match_batch(frame, step=i, N_select=cfg.view_number, refine_mode=cfg.refine_mode)  # N, 6i
+        matches_3d_list = matcher.match_batch(frame, step=step, N_select=cfg.view_number, refine_mode=cfg.refine_mode)  # N, 6i
         # print(matches_3d[::10])
         # if matches_3d is None:
         #     print("No matches")
@@ -818,7 +825,6 @@ def run_model(d, matcher,cfg ,vis_dict=None):
                 matches_3ds.append(matches_3d)
                 rt_matrixs.append(np.eye(4))
                 rubbish_flag = True
-
 
         test_camera_Ks.append(test_camera_K)
         # depthss.append(depths)
@@ -956,6 +962,47 @@ def compute_results(q_preds,t_preds,gt_poses):
         print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
     return r_errors,t_errors
 
+def compute_results_rt(pred_poses,gt_poses):
+    r_errors = []
+    t_errors = []
+    #pred_poses = pred_poses.detach().cpu().numpy()
+    #gt_poses = gt_poses.detach().cpu().numpy()
+
+    for i in range(len(gt_poses)):
+        R1 = gt_poses[i][:3, :3]/np.cbrt(np.linalg.det(gt_poses[i][:3, :3]))
+        T1 = gt_poses[i][:3, 3]
+
+        R2 = pred_poses[i][:3, :3]/np.cbrt(np.linalg.det(pred_poses[i][:3, :3]))
+        T2 = pred_poses[i][:3, 3]
+
+        R = R1 @ R2.transpose()
+        theta = np.arccos(np.clip((np.trace(R) - 1)/2,-1,1)) * 180/np.pi
+        shift = np.linalg.norm(T1-T2) * 100
+        theta = min(theta, np.abs(180 - theta))
+        r_errors.append(theta)
+        t_errors.append(shift)
+
+    num_samples = len(r_errors)
+    r_errors = np.array(r_errors)
+    t_errors = np.array(t_errors)
+
+    thresholds = [
+        (5, 2),
+        (5, 5),
+        (10, 2),
+        (10, 5),
+        (10, 10)
+    ]
+
+    print("Average R_error: %.2f Average T_error: %.2f" % (np.mean(r_errors), np.mean(t_errors)))
+    print("Median R_error: %.2f Median T_error: %.2f" % (np.median(r_errors), np.median(t_errors)))
+
+    for r_thres, t_thres in thresholds:
+        good_samples = np.sum(np.logical_and(r_errors < r_thres, t_errors < t_thres))
+        acc = (good_samples / num_samples) * 100.0
+        print("%.1f degree %.1f cm threshold: %.2f" % (r_thres, t_thres, acc))
+    return r_errors,t_errors
+
 def chamfer_distance(depth_point,pred_point):
     # input: torch(n,3) torch(m,3)
     dist_map = pairwise_distances_torch(depth_point,pred_point)    # n,m
@@ -1019,7 +1066,7 @@ def main(cfg):
                 vis_dict = {}
             else:
                 vis_dict = None
-            matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths,depths,rubbish_flag = run_model(sample,matcher,cfg,vis_dict)
+            matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths,depths,rubbish_flag = run_model(sample,matcher, cfg,vis_dict)
         else:
             print('sampling failed')
         qt_pred_for_vis_seq = []
@@ -1047,10 +1094,10 @@ def main_sim(cfg):
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
 
 
-
+    ref_dir = "/root/autodl-tmp/shiqian/datasets/reference_views/%s" % cfg.gripper
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=cfg.ref_dir, num_views=840, features=cfg.feat_layer)
+    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=cfg.feat_layer)
     sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
@@ -1072,7 +1119,7 @@ def main_sim(cfg):
     else:
         gripper_pointcloud = read_pointcloud(pointcloud_path)
 
-    matcher = Dinov2Matcher(ref_dir=cfg.ref_dir, refs=refs,
+    matcher = Dinov2Matcher(ref_dir=ref_dir, refs=refs,
                             model_pointcloud=gripper_pointcloud,
                             feat_layer=cfg.feat_layer,
                             device=cfg.device)
@@ -1080,11 +1127,14 @@ def main_sim(cfg):
 
     print(len(sim_dataset))
     memory_pool = MemoryPool(cfg)
+    all_preds = []
+    all_gts = []
     while global_step < cfg.max_iter:
         global_step += 1
         sim = next(sim_loader)
         single_frame_rts = []
         for i in range(len(sim['rgb'][0])):
+            print("Frame %d" % i)
             sim_frame = {
                 'rgb': sim['rgb'][:,i:i+1,...],
                 'depth':sim['depth'][:,i:i+1,...],
@@ -1111,9 +1161,14 @@ def main_sim(cfg):
                     vis_dict = {}
                 else:
                     vis_dict = None
-                matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths,depths,rubbish_flag = run_model(sim_frame,matcher,cfg,vis_dict)
+                matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths,depths,rubbish_flag = run_model(sim_frame,matcher,i, cfg,vis_dict)
             else:
                 print('sampling failed')
+            if cfg.pnp_only:
+                #print(rt_matrixs[0].shape, gt_poses[0].shape)
+                all_preds.append(rt_matrixs[0])
+                all_gts.append(np.linalg.inv(gt_poses[0]))
+                continue
             qt_pred_for_vis_seq = []
             print(f"seq{global_step}frame{i}")
             frame = {'matches_3d': matches_3ds[0],  # tensor
@@ -1133,7 +1188,10 @@ def main_sim(cfg):
             iter_end_time = time.time()
             print(f'memory_pool time cost {iter_end_time-memory_time}')     # 大约0.04s
             print("Iteration {}".format(global_step),' time',iter_end_time-iter_start_time) # 大约0.08s
-        memory_pool.eliminate_all_frames_and_compute_result(global_step)
+        if not cfg.pnp_only:
+            memory_pool.eliminate_all_frames_and_compute_result(global_step)
+        else:
+            compute_results_rt(all_preds,all_gts)
 
 
 if __name__ == '__main__':
@@ -1163,6 +1221,7 @@ if __name__ == '__main__':
     parser.add_argument('--init',default='rela')        # 不要改
     
     parser.add_argument('--gripper', type=str, default="panda")
+    parser.add_argument('--pnp_only',default=False,action='store_true')
 
     cfg = parser.parse_args()
     # main(cfg)

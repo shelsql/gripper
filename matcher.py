@@ -13,6 +13,7 @@ import time
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
+from utils.spd import depth_map_to_pointcloud, read_pointcloud, transform_pointcloud
 # from utils.spd import calc_masked_batch_var, calc_coords_3d_var
 
 from sklearn.neighbors import NearestNeighbors
@@ -67,7 +68,14 @@ class Dinov2Matcher:
         self.model_pc = torch.tensor(model_pointcloud, device=device)
         self.ref_images = ref_images
         self.ref_intrinsics = refs['intrinsics']
-
+        '''
+        save_pointcloud(self.model_pc.cpu().numpy(), "pointclouds/model.txt")
+        
+        for i in range(num_refs):
+            ref_pointcloud = depth_map_to_pointcloud(ref_depths[i,0], ref_masks[i,0], refs['intrinsics'])
+            ref_pointcloud = transform_pointcloud(ref_pointcloud, self.ref_c2os[i].cpu().numpy())
+            save_pointcloud(ref_pointcloud, "pointclouds/ref_image_%.3d.txt" % i)
+        '''
         self.transform = transforms.Compose([
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
@@ -408,7 +416,7 @@ class Dinov2Matcher:
             features = self.extract_features(cropped_rgbs) # B, 1024, 32, 32
         else:
             features = torch.tensor(sample['feat']).float().to(self.device)
-            print(features.shape)
+            #print(features.shape)
             if len(features.shape) == 5:
                 features = features[0]
         N_tokens = feat_H * feat_W
@@ -601,7 +609,7 @@ class Dinov2Matcher:
                 x_2 += size[0]
                 #print(x_1, y_1, x_2, y_2)
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
-            cv2.imwrite("./match_vis/match3d_%.2d.png" % step, full_img)
+            cv2.imwrite("./match_vis/match3d_%.2d_%.3d.png" % (step, i), full_img)
             
     def vis_features(self, images, feat_masks, feats):
         B, C, H, W = images.shape
