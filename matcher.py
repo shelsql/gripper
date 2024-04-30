@@ -46,6 +46,7 @@ class Dinov2Matcher:
         self.patch_size = 14
         self.ref_dir = ref_dir
 
+
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         num_refs, C, H, W = ref_rgbs.shape
         ref_depths = torch.Tensor(refs['depths']).float().permute(0, 1, 4, 2, 3).reshape(num_refs, 1, H, W)
@@ -390,7 +391,7 @@ class Dinov2Matcher:
         #self.vis_3d_matches(images, matches, selected_refs)
         return matches
         
-    def match_batch(self, sample, step=0, N_select=1,refine_mode='a'):
+    def match_batch(self, sample, step=0, N_select=1,refine_mode='a',gt_pose=None):
         timestamp = time.time()
         rgbs = torch.Tensor(sample['rgb']).float().to(self.device) # B, C, H, W
         depths = torch.Tensor(sample['depth']).float().to(self.device)
@@ -429,7 +430,8 @@ class Dinov2Matcher:
         #timestamp = print_time("Prepare data", timestamp)
 
         matches_3d_list = []
-        selected_refs = self.select_refs(features, batch_feat_masks, B, test_idxs, n=N_select).reshape(-1)  # TODO 现在只能batch=1
+        ref_pose_list = []
+        selected_refs = self.select_refs(features, batch_feat_masks, B, test_idxs, n=N_select,gt_pose=gt_pose).reshape(-1)  # TODO 现在只能batch=1
         #timestamp = print_time("Select refs", timestamp)
         if refine_mode == 'c':
             selected_refs = selected_refs.unsqueeze(0)
@@ -485,10 +487,12 @@ class Dinov2Matcher:
             match_3d_coords = ref_3d_coords[max_inds,1:]
             matches_3d = torch.concat([match_2d_coords, match_3d_coords], dim = 1)
             #self.vis_3d_matches(images, matches_3d, seleced_refs_slice, step)
-            matches_3d_list.append(matches_3d)
+            matches_3d_list.append(matches_3d)      # list of different shape tensors
+            ref_pose_list.append(self.ref_c2ws[idx])     # list of tensors
             #timestamp = print_time("Choose matches", timestamp)
         #print(matches_3d.shape)
-        return matches_3d_list
+
+        return matches_3d_list, ref_pose_list,selected_refs
 
     def match_2d_to_3d(self, matches_2d):
         #TODO: Project 2D coords to gripper space using ref intrinsics
@@ -768,7 +772,7 @@ class Dinov2Matcher:
         np.save(self.ref_dir + '/vision_word_list_%.2d.npy' % self.feat_layer,centers)
         return centers, ref_bags
 
-    def select_refs(self,features,batch_feat_mask,b,test_idxs, n):
+    def select_refs(self,features,batch_feat_mask,b,test_idxs, n,gt_pose=None):
         # B*N,C
         features = features.reshape(32,32,-1)[batch_feat_mask[0,0]>0] # n_test_2d_pts(381), C
         descriptors_centers_dis = pairwise_euclidean_distance(features, torch.tensor(self.vision_word_list, device=self.device)) # 381，2048
@@ -808,4 +812,20 @@ class Dinov2Matcher:
 
         bag_cos_sim = pairwise_cosine_similarity(test_bags,torch.tensor(self.ref_bags,device=self.device))   # b,v
         _,sorted_view_indices = torch.sort(bag_cos_sim,dim=1,descending=True)
+
+        if gt_pose is not None:
+            r_errors = []
+            t_errors = []
+            gt_pose = gt_pose
+            ref_poses = self.ref_c2ws.detach().cpu().numpy()
+
+            for i in range(ref_poses.shape[0]):
+                R1 = gt_pose[:3, :3] / np.cbrt(np.linalg.det(gt_pose[:3, :3]))
+                R2 = ref_poses[i, :3, :3] / np.cbrt(np.linalg.det(ref_poses[i, :3, :3]))
+                R = R1 @ R2.transpose()
+                theta = np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)) * 180 / np.pi
+                r_errors.append(theta)
+            r_errors = np.stack(r_errors, axis=0)
+            return np.argsort(r_errors)[0]
+
         return sorted_view_indices[:,:n]

@@ -186,3 +186,19 @@ def quaternion_apply(quaternion, point):
         quaternion_invert(quaternion),
     )
     return out[..., 1:]
+
+def average_quaternion_torch(Q, weights=None):
+    if weights is None:
+        weights = torch.ones(len(Q), device=Q.device) / len(Q)
+    A = torch.zeros((4, 4), device=Q.device)
+    weight_sum = torch.sum(weights)
+
+    oriented_Q = ((Q[:, 0:1] > 0).float() - 0.5) * 2 * Q
+    A = torch.einsum("bi,bk->bik", (oriented_Q, oriented_Q))
+    A = torch.sum(torch.einsum("bij,b->bij", (A, weights)), 0)
+    A /= weight_sum
+
+    q_avg = torch.linalg.eigh(A)[1][:, -1]
+    if q_avg[0] < 0:
+        return -q_avg
+    return q_avg

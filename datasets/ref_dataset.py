@@ -9,6 +9,7 @@ from tqdm import tqdm
 import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms
+import joblib
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
@@ -16,7 +17,8 @@ class ReferenceDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/rendered_franka",
                  num_views=64,
-                 features=23
+                 features=23,
+                 pca = None,
                  ):
         super().__init__()
         print("Loading reference view dataset...")
@@ -25,6 +27,7 @@ class ReferenceDataset(Dataset):
         self.dataset_location = dataset_location
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
+        self.pca = pca
         print("Found %d views in %s" % (len(self.rgb_paths), self.dataset_location))
     
         
@@ -37,7 +40,7 @@ class ReferenceDataset(Dataset):
         obj_poses = []
         if self.features > 0:
             feats = []
-        
+            # feats = None
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
         
         for glob_rgb_path in self.rgb_paths:
@@ -56,10 +59,16 @@ class ReferenceDataset(Dataset):
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
             if self.features > 0:
-                feat_path = path + "_feats_%.2d.npy" % self.features
-                feat = np.load(feat_path)
+                if os.path.exists(path + f"_feats_pca.npy"):
+                    feat = np.load(path + f"_feats_pca.npy")
+                else:
+                    feat_path = path + "_feats_%.2d.npy" % self.features
+                    feat = np.load(feat_path)
+                    if self.pca is not None:
+                        feat = self.pca.transform(feat.reshape(1024,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
+                        np.save(path + f"_feats_pca.npy", feat)
                 feats.append(feat)
-            
+
             rgbs.append(rgb)
             depths.append(depth)
             masks.append(mask)
@@ -71,10 +80,11 @@ class ReferenceDataset(Dataset):
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
         if self.features > 0:
-            feats = np.stack(feats, axis = 0)
+            feats = np.stack(feats, axis=0)  # 840,1024,32,32
         else:
             feats = None
         #print(depths.shape)
+
         sample = {
             "rgbs": rgbs,
             "depths": depths,
@@ -83,7 +93,7 @@ class ReferenceDataset(Dataset):
             "obj_poses": obj_poses,
             "feats": feats,
             "intrinsics": camera_intrinsic
-        }
+            }
         
         return sample
     def __len__(self):
@@ -238,7 +248,8 @@ class SimVideoDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/datasets/final_20240419",
                  gripper="panda",
-                 features=19
+                 features=19,
+                 pca = None
                  ):
         super().__init__()
         print("Loading rendered dataset...")
@@ -253,7 +264,7 @@ class SimVideoDataset(Dataset):
         for subdir in self.subdirs:
             self.videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
         print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
-        
+        self.pca=pca
         #self.obj_path = dataset_location + "/model/model.obj"
         #self.ref_path = "/root/autodl-tmp/shiqian/datasets/reference_views/" + gripper
         
@@ -292,6 +303,8 @@ class SimVideoDataset(Dataset):
             if self.features > 0:
                 feat_path = path + "_feats_%.2d.npy" % self.features
                 feat = np.load(feat_path)
+                if self.pca is not None:
+                    feat = self.pca.transform(feat.reshape(1024,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
                 feats.append(feat)
             
             rgbs.append(rgb)
@@ -323,7 +336,8 @@ class SimVideoDataset(Dataset):
             
             "gripper": self.gripper,
             "vid_type": vid_type,
-            "vid_num": vid_num
+            "vid_num": vid_num,
+            "video_path":video_path
         }
         
         return sample
