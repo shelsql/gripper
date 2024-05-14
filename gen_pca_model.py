@@ -26,7 +26,7 @@ class ReferenceDataset(Dataset):
                  ):
         super().__init__()
         print("Loading reference view dataset...")
-        self.N = num_views
+        # self.N = num_views
         self.features = features
         self.dataset_location = dataset_location
         self.rgb_paths = glob.glob(dataset_location + "/*png")
@@ -52,6 +52,7 @@ class ReferenceDataset(Dataset):
             # feats = None
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
         ref_features_list = []
+        print('loading data...')
         for idx,glob_rgb_path in enumerate(self.rgb_paths):
             path = glob_rgb_path[:-8]
 
@@ -119,6 +120,7 @@ class ReferenceDataset(Dataset):
                 if self.features > 0:
                     feats = []
         ref_features_list = torch.cat(ref_features_list).cpu().numpy()
+        print('computing pca...')
         self.pca.fit(ref_features_list)
         joblib.dump(self.pca,f'{self.dataset_location}/pca_model.joblib')
 
@@ -163,14 +165,19 @@ class ReferenceDataset(Dataset):
 
 if __name__ == '__main__':
 
-    ref_dir = f"/root/autodl-tmp/shiqian/code/render/reference_more/panda"
-    # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
-    # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=19,pca=None)
 
-    # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
-    ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
+    gripper_name = ['kinova','robotiq2f140','robotiq2f85','robotiq3f']
 
-    # iterloader = iter(test_dataloader)
-    # Load ref images and init Dinov2 Matcher
-    refs = next(iter(ref_dataloader))
+    for gripper in gripper_name:
+
+        ref_dir = f"/root/autodl-tmp/shiqian/code/render/reference_more/{gripper}"
+        # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
+        # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
+        ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=3240, features=19,pca=None)
+
+        # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
+        ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
+
+        # iterloader = iter(test_dataloader)
+        # Load ref images and init Dinov2 Matcher
+        refs = next(iter(ref_dataloader))

@@ -57,7 +57,7 @@ def compute_auc_sklearn(errs, max_val=0.1, step=0.001):
     auc = metrics.auc(X, Y) / (max_val*1)
     return auc
 
-def compute_auc_all(preds, gts, model_pts):
+def compute_auc_all(preds, gts, model_pts,max=0.1,step=0.001):
     assert(preds.shape[0] == gts.shape[0])
     n = preds.shape[0]
     add_all = []
@@ -67,8 +67,8 @@ def compute_auc_all(preds, gts, model_pts):
         adds = adds_err(preds[i], gts[i], model_pts)
         add_all.append(add)
         adds_all.append(adds)
-    add_auc = compute_auc_sklearn(add_all)
-    adds_auc = compute_auc_sklearn(adds_all)
+    add_auc = compute_auc_sklearn(add_all,max,step)
+    adds_auc = compute_auc_sklearn(adds_all,max,step)
     metrics = {
         "add_auc": add_auc,
         "adds_auc": adds_auc

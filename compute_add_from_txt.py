@@ -4,23 +4,25 @@ from utils.spd import read_pointcloud,transform_pointcloud
 from utils.quaternion_utils import *
 import torch
 from utils.metrics import compute_auc_all
-from itertools import combinations
-# def point_cloud_diameter(point_cloud):
-#     distances = [np.linalg.norm(a - b) for a, b in combinations(point_cloud, 2)]
-#     return np.max(distances)
-# dia = point_cloud_diameter(gripper_pointcloud)
-# dia = 0.21452632541743355
 
+gripper_name = 'panda'
 results_total = []
-for i in range(1,2):
-    results = np.loadtxt(f'results/memory/panda_{i}_new.txt')   # 1024,23
+for i in range(1,31):
+    results = np.loadtxt(f'results/单帧both/{gripper_name}_{i}.txt')   # 1024,23
     results_total.append(results)
 
 results_total = np.concatenate(results_total,axis=0)
 q_preds = results_total[:,:4]     # 1024,4
 t_preds = results_total[:,4:7]    # 1024,3
 gt_poses = results_total[:,7:23].reshape(-1,4,4)    # 1024,4,4
-gripper_pointcloud = read_pointcloud("./pointclouds/gripper.txt")   # 8192,3
+
+# results = np.loadtxt(f'results/memory/{gripper_name}_pnponly.txt')
+# pred_poses = results[:,:16].reshape(-1,4,4)
+# gt_poses = np.linalg.inv(results[:,16:].reshape(-1,4,4))
+# q_preds = matrix_to_quaternion(torch.tensor(pred_poses[:,:3,:3])).numpy()
+# t_preds = pred_poses[:,:3,3]
+
+gripper_pointcloud = read_pointcloud(f"/root/autodl-tmp/shiqian/datasets/final_20240419/{gripper_name}/model/sampled_4096.txt")   # 8192,3
 
 x = np.linspace(0,0.1,1000)
 y = np.zeros(1000)
@@ -40,8 +42,10 @@ preds = np.zeros((q_preds.shape[0],4,4))
 preds[:,:3,:3] = np.array(quaternion_to_matrix(torch.tensor(q_preds)))
 preds[:,:3,3] = t_preds
 preds[:,3,3] = 1
-# metrics = compute_auc_all(preds,np.linalg.inv(gt_poses),gripper_pointcloud)
-# print(metrics)
+metrics = compute_auc_all(preds,np.linalg.inv(gt_poses),gripper_pointcloud)
+print(metrics)
+metrics = compute_auc_all(preds,np.linalg.inv(gt_poses),gripper_pointcloud,0.01,0.0001)
+print(metrics)
 
 
 
@@ -51,7 +55,8 @@ for i in range(gt_poses.shape[0]):
     gt_poses[i] = np.linalg.inv(gt_poses[i])
     # preds[i] = np.linalg.inv(preds[i])
 
-
+r_count = 0
+t_count = 0
 r_errors = []
 t_errors = []
 for i in range(gt_poses.shape[0]):
@@ -67,6 +72,10 @@ for i in range(gt_poses.shape[0]):
 
     r_errors.append(theta)
     t_errors.append(shift)
+    if theta>10:
+        r_count +=1
+    if shift>5:
+        t_count +=1
 
 num_samples = len(r_errors)
 r_errors = np.array(r_errors)

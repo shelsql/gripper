@@ -19,6 +19,7 @@ class ReferenceDataset(Dataset):
                  num_views=64,
                  features=23,
                  pca = None,
+                 use_geo_type=None
                  ):
         super().__init__()
         print("Loading reference view dataset...")
@@ -28,6 +29,7 @@ class ReferenceDataset(Dataset):
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
         self.pca = pca
+        self.use_geo_type = use_geo_type
         print("Found %d views in %s" % (len(self.rgb_paths), self.dataset_location))
     
         
@@ -59,13 +61,24 @@ class ReferenceDataset(Dataset):
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
             if self.features > 0:
-                if os.path.exists(path + f"_feats_pca.npy"):
-                    feat = np.load(path + f"_feats_pca.npy")
-                else:
+                if self.use_geo_type is None:
                     feat_path = path + "_feats_%.2d.npy" % self.features
                     feat = np.load(feat_path)
-                    if self.pca is not None:
-                        feat = self.pca.transform(feat.reshape(1024,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
+                else:
+                    feat_path = path + "_feats_catgeo_19.npy"
+                    feat = np.load(feat_path)
+                    if self.use_geo_type =='only':
+                        feat = feat[:1024,...]
+                    elif self.use_geo_type == 'nope':
+                        feat = feat[1024:, ...]
+                    elif self.use_geo_type == 'both':
+                        feat = feat[0:2048,...]
+
+                if self.pca is not None:
+                    if os.path.exists(path + f"_feats_pca.npy"):
+                        feat = np.load(path + f"_feats_pca.npy")
+                    else:
+                        feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)     # 256,32,32
                         np.save(path + f"_feats_pca.npy", feat)
                 feats.append(feat)
 
@@ -249,7 +262,8 @@ class SimVideoDataset(Dataset):
                  dataset_location="/root/autodl-tmp/shiqian/datasets/final_20240419",
                  gripper="panda",
                  features=19,
-                 pca = None
+                 pca = None,
+                 use_geo_type=None
                  ):
         super().__init__()
         print("Loading rendered dataset...")
@@ -265,6 +279,7 @@ class SimVideoDataset(Dataset):
             self.videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
         print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
         self.pca=pca
+        self.use_geo_type=use_geo_type
         #self.obj_path = dataset_location + "/model/model.obj"
         #self.ref_path = "/root/autodl-tmp/shiqian/datasets/reference_views/" + gripper
         
@@ -301,10 +316,22 @@ class SimVideoDataset(Dataset):
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
             if self.features > 0:
-                feat_path = path + "_feats_%.2d.npy" % self.features
-                feat = np.load(feat_path)
+                if self.use_geo_type is None:
+                    feat_path = path + "_feats_%.2d.npy" % self.features
+                    feat = np.load(feat_path)
+                else:
+                    feat_path = path + "_feats_catgeo_19.npy"
+                    feat = np.load(feat_path)
+                    assert feat.shape[0] == 2048
+                    if self.use_geo_type == 'only':
+                        feat = feat[:1024,...]
+                    elif self.use_geo_type == 'nope':
+                        feat = feat[1024:,...]
+                    elif self.use_geo_type == 'both':
+                        feat = feat[0:2048,...]
+
                 if self.pca is not None:
-                    feat = self.pca.transform(feat.reshape(1024,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
+                    feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
                 feats.append(feat)
             
             rgbs.append(rgb)
