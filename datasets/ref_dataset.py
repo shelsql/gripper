@@ -17,19 +17,25 @@ class ReferenceDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/rendered_franka",
                  num_views=64,
-                 features=23,
+                 dino_layer=19,
                  pca = None,
-                 use_geo_type=None
+                 uni3d_layer=19,
+                 uni3d_color=False,
+                 setting_name=None,
+                 cfg=None
                  ):
         super().__init__()
         print("Loading reference view dataset...")
         self.N = num_views
-        self.features = features
+        self.dino_layer = dino_layer
+        self.uni3d_layer = uni3d_layer
+        self.uni3d_color = uni3d_color
         self.dataset_location = dataset_location
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
         self.pca = pca
-        self.use_geo_type = use_geo_type
+        self.setting_name = setting_name
+        self.cfg = cfg
         print("Found %d views in %s" % (len(self.rgb_paths), self.dataset_location))
     
         
@@ -40,8 +46,8 @@ class ReferenceDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
-        if self.features > 0:
-            feats = []
+
+        feats = []
             # feats = None
         camera_intrinsic = json.loads(open(self.camera_intrinsic_path).read())
         
@@ -60,27 +66,34 @@ class ReferenceDataset(Dataset):
             mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
-            if self.features > 0:
-                if self.use_geo_type is None:
-                    feat_path = path + "_feats_%.2d.npy" % self.features
-                    feat = np.load(feat_path)
-                else:
-                    feat_path = path + "_feats_catgeo_19.npy"
-                    feat = np.load(feat_path)
-                    if self.use_geo_type =='only':
-                        feat = feat[:1024,...]
-                    elif self.use_geo_type == 'nope':
-                        feat = feat[1024:, ...]
-                    elif self.use_geo_type == 'both':
-                        feat = feat[0:2048,...]
+
+            if self.cfg.pca_type == 'torch':
+                pre_feat_path = path + f'_feats_{self.setting_name}_pca_lowrank.npy'
+            elif self.cfg.pca_type == 'sklearn':
+                pre_feat_path = path + f'_feats_{self.setting_name}_pca.npy'
+            if os.path.exists(pre_feat_path):
+                feat = np.load(pre_feat_path)
+            else:
+                if self.dino_layer>0:
+                    dino_path = path + f"_feats_dino{self.dino_layer}.npy"
+                    dino_feat = np.load(dino_path)
+                if self.uni3d_layer>0:
+                    uni3d_path = path + f"_feats_uni3d{self.uni3d_layer}_"
+                    if self.uni3d_color:
+                        uni3d_path = uni3d_path + 'colored.npy'
+                    else:
+                        uni3d_path = uni3d_path + 'nocolor.npy'
+                    uni3d_feat = np.load(uni3d_path)
+                if (self.dino_layer>0) and (self.uni3d_layer>0):
+                    feat = np.concatenate([dino_feat,uni3d_feat],axis=0)
+                elif self.dino_layer <= 0:
+                    feat = uni3d_feat
+                elif self.uni3d_layer<=0:
+                    feat = dino_feat
 
                 if self.pca is not None:
-                    if os.path.exists(path + f"_feats_pca.npy"):
-                        feat = np.load(path + f"_feats_pca.npy")
-                    else:
-                        feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)     # 256,32,32
-                        np.save(path + f"_feats_pca.npy", feat)
-                feats.append(feat)
+                    feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)     # 256,32,32
+            feats.append(feat)
 
             rgbs.append(rgb)
             depths.append(depth)
@@ -92,10 +105,9 @@ class ReferenceDataset(Dataset):
         masks = np.stack(masks, axis = 0)
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
-        if self.features > 0:
-            feats = np.stack(feats, axis=0)  # 840,1024,32,32
-        else:
-            feats = None
+
+        feats = np.stack(feats, axis=0)  # 840,1024,32,32
+
         #print(depths.shape)
 
         sample = {
@@ -259,11 +271,10 @@ class SimTrackDataset(Dataset):
 
 class SimVideoDataset(Dataset):
     def __init__(self,
-                 dataset_location="/root/autodl-tmp/shiqian/datasets/final_20240419",
+                 dataset_location="/home/data/tianshuwu/data/final_20240419",
                  gripper="panda",
                  features=19,
-                 pca = None,
-                 use_geo_type=None
+
                  ):
         super().__init__()
         print("Loading rendered dataset...")
@@ -278,12 +289,11 @@ class SimVideoDataset(Dataset):
         for subdir in self.subdirs:
             self.videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
         print("Found %d videos in %s" % (len(self.videos), self.dataset_location))
-        self.pca=pca
-        self.use_geo_type=use_geo_type
+
         #self.obj_path = dataset_location + "/model/model.obj"
         #self.ref_path = "/root/autodl-tmp/shiqian/datasets/reference_views/" + gripper
         
-    def __getitem__(self, index):
+    def __getitem__(self, index):   # 测试集现在永远是现场提feature
         print('dataid',index)
         video_path = self.videos[index]
         vid_type = video_path.split("/")[-2]
@@ -294,8 +304,8 @@ class SimVideoDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
-        if self.features > 0:
-            feats = []
+        # if self.features > 0:
+        #     feats = []
         
         camera_intrinsic_path = video_path + "/camera_intrinsics.json"
         camera_intrinsic = json.loads(open(camera_intrinsic_path).read())
@@ -315,24 +325,7 @@ class SimVideoDataset(Dataset):
             mask = cv2.imread(mask_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)[:,:,0:1]
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
-            if self.features > 0:
-                if self.use_geo_type is None:
-                    feat_path = path + "_feats_%.2d.npy" % self.features
-                    feat = np.load(feat_path)
-                else:
-                    feat_path = path + "_feats_catgeo_19.npy"
-                    feat = np.load(feat_path)
-                    assert feat.shape[0] == 2048
-                    if self.use_geo_type == 'only':
-                        feat = feat[:1024,...]
-                    elif self.use_geo_type == 'nope':
-                        feat = feat[1024:,...]
-                    elif self.use_geo_type == 'both':
-                        feat = feat[0:2048,...]
 
-                if self.pca is not None:
-                    feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)
-                feats.append(feat)
             
             rgbs.append(rgb)
             depths.append(depth)
@@ -344,10 +337,10 @@ class SimVideoDataset(Dataset):
         masks = np.stack(masks, axis = 0)
         c2ws = np.stack(c2ws, axis = 0)
         obj_poses = np.stack(obj_poses, axis = 0)
-        if self.features > 0:
-            feats = np.stack(feats, axis = 0)
-        else:
-            feats = None
+        # if self.features > 0:
+        #     feats = np.stack(feats, axis = 0)
+        # else:
+        feats = None
         #print(depths.shape)
         
         #print("vid_type:", vid_type)
@@ -358,7 +351,7 @@ class SimVideoDataset(Dataset):
             "mask": masks,
             "c2w": c2ws,
             "obj_pose": obj_poses,
-            "feat": feats,
+            # "feat": feats,
             "intrinsics": camera_intrinsic,
             
             "gripper": self.gripper,

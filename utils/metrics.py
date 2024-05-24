@@ -69,8 +69,5 @@ def compute_auc_all(preds, gts, model_pts,max=0.1,step=0.001):
         adds_all.append(adds)
     add_auc = compute_auc_sklearn(add_all,max,step)
     adds_auc = compute_auc_sklearn(adds_all,max,step)
-    metrics = {
-        "add_auc": add_auc,
-        "adds_auc": adds_auc
-    }
+    metrics = [add_auc,adds_auc]
     return metrics
