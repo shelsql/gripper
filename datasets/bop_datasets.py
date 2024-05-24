@@ -29,30 +29,62 @@ class YCBVDataset(Dataset):
             vid_clip["vid_id"] = vid_dir.split("/")[-1]
             vid_clip["img_ids"] = []
             vid_clip["gt_poses"] = []
+            vid_clip["obj_ids_in_img"] = []
             scene_gt = json.loads(open(vid_dir + "/scene_gt.json").read())
             scene_cam = json.loads(open(vid_dir + "/scene_camera.json").read())
             for img_id in scene_gt.keys():
                 frame_info = scene_gt[img_id]
-                for obj_info in frame_info:
+                for i in range(len(frame_info)):
+                    obj_info = frame_info[i]
                     if obj_info['obj_id'] == obj_id:
                         vid_clip["img_ids"].append(img_id)
                         o2c_pose = np.eye(4)
                         o2c_pose[:3,:3] = np.array(obj_info['cam_R_m2c']).reshape(3,3)
                         o2c_pose[:3,3] = np.array(obj_info['cam_t_m2c'])
                         vid_clip["gt_poses"].append(o2c_pose)
+                        vid_clip["obj_ids_in_img"].append(i)
                         break
             if len(vid_clip["img_ids"]) > 0:
                 self.all_video_clips.append(vid_clip)
+        print('Found %d clips for object %d' % (len(self.all_video_clips), obj_id))
                 
     def __getitem__(self, index):
         vid_clip = self.all_video_clips[index]
         vid_id = vid_clip["vid_id"]
         img_ids = vid_clip["img_ids"]
         gt_poses = vid_clip["gt_poses"]
+        obj_ids_in_img = vid_clip["obj_ids_in_img"]
         rgb_dir = f"{self.dataset_location}/test/{vid_id}/rgb"
-        depth_dir = f"{self.dataset_location}/test/{vid_id}/rgb"
-        mask_dir = f"{self.dataset_location}/test/{vid_id}/rgb"
-        return imgs, gt_poses
+        depth_dir = f"{self.dataset_location}/test/{vid_id}/depth"
+        mask_dir = f"{self.dataset_location}/test/{vid_id}/mask_visib"
+        print("Video id: %s  Obj id: %d" % (vid_id, self.obj_id))
+        rgbs = []
+        depths = []
+        masks = []
+        for i in range(len(img_ids)):
+            img_id = int(img_ids[i])
+            obj_id_in_img = obj_ids_in_img[i]
+            rgb = cv2.imread(rgb_dir + "/%.6d.png" % img_id)
+            depth = cv2.imread(depth_dir + "/%.6d.png" % img_id, cv2.IMREAD_ANYDEPTH)[:,:,np.newaxis].astype(float) / 1000.0
+            mask = cv2.imread(mask_dir + "/%.6d_%.6d.png" % (img_id, obj_id_in_img))[:,:,0:1]
+            #print("rgb stats:", rgb.shape,rgb.dtype, rgb.max(), rgb.min(), rgb.mean())
+            #print("depth stats:", depth.shape,depth.dtype, depth.max(), depth.min(), depth.mean())
+            #print("mask stats:", mask.shape,mask.dtype, mask.max(), mask.min(), mask.mean())
+            rgbs.append(rgb)
+            depths.append(depth)
+            masks.append(mask)
+        rgbs = np.stack(rgbs, axis = 0)
+        depths = np.stack(depths, axis = 0)
+        masks = np.stack(masks, axis = 0)
+        gt_poses = np.stack(gt_poses, axis = 0)
+        
+        sample = {
+            "rgb": rgbs,
+            "depth": depths,
+            "mask": masks,
+            "pose": gt_poses
+        }
+        return sample
         
     def __len__(self):
         return len(self.all_video_clips)

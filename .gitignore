@@ -16,3 +16,4 @@ test_views/
 vis_results/
 results/
 checkpoints/
+vis*/
