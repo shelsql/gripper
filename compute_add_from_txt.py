@@ -7,8 +7,8 @@ from utils.quaternion_utils import *
 import torch
 from utils.metrics import compute_auc_all
 
-fold_name = 'reproj_3d'
-gripper_name_list = ['panda']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
+fold_name = 'dinouni3d一起pca'
+gripper_name_list = ['kinova']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
 result_dict = {
     'add_10cm':[],
     'adds_10cm':[],

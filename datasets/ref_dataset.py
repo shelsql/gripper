@@ -18,10 +18,11 @@ class ReferenceDataset(Dataset):
                  dataset_location="/root/autodl-tmp/shiqian/code/gripper/rendered_franka",
                  num_views=64,
                  dino_layer=19,
-                 pca = None,
                  uni3d_layer=19,
                  uni3d_color=False,
                  setting_name=None,
+                 dino_name = None,
+                 uni3d_name = None,
                  cfg=None
                  ):
         super().__init__()
@@ -33,8 +34,9 @@ class ReferenceDataset(Dataset):
         self.dataset_location = dataset_location
         self.rgb_paths = glob.glob(dataset_location + "/*png")
         self.camera_intrinsic_path = dataset_location + "/camera_intrinsics.json"
-        self.pca = pca
         self.setting_name = setting_name
+        self.dino_name = dino_name
+        self.uni3d_name = uni3d_name
         self.cfg = cfg
         print("Found %d views in %s" % (len(self.rgb_paths), self.dataset_location))
     
@@ -67,13 +69,23 @@ class ReferenceDataset(Dataset):
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
 
-            if self.cfg.pca_type == 'torch':
+            if self.cfg.pca_type == 'together':
                 pre_feat_path = path + f'_feats_{self.setting_name}_pca_lowrank.npy'
-            elif self.cfg.pca_type == 'sklearn':
-                pre_feat_path = path + f'_feats_{self.setting_name}_pca.npy'
-            if os.path.exists(pre_feat_path):
-                feat = np.load(pre_feat_path)
-            else:
+                if os.path.exists(pre_feat_path):
+                    feat = np.load(pre_feat_path)   # 256
+
+            elif self.cfg.pca_type == 'respective':
+                dino_feat_path = path + f'_feats_{self.dino_name}_pca_lowrank.npy'
+                dino_feat = np.load(dino_feat_path)
+                # dino_feat = dino_feat / np.linalg.norm(dino_feat,axis=0,keepdims=True)
+                uni3d_feat_path = path + f'_feats_{self.uni3d_name}_pca_lowrank.npy'
+                uni3d_feat = np.load(uni3d_feat_path)
+                # uni3d_feat = uni3d_feat / np.linalg.norm(uni3d_feat,axis=0,keepdims=True)
+
+                feat = np.concatenate((dino_feat, uni3d_feat))  # 512
+
+
+            elif self.cfg.pca_type == 'nope':
                 if self.dino_layer>0:
                     dino_path = path + f"_feats_dino{self.dino_layer}.npy"
                     dino_feat = np.load(dino_path)
@@ -85,14 +97,11 @@ class ReferenceDataset(Dataset):
                         uni3d_path = uni3d_path + 'nocolor.npy'
                     uni3d_feat = np.load(uni3d_path)
                 if (self.dino_layer>0) and (self.uni3d_layer>0):
-                    feat = np.concatenate([dino_feat,uni3d_feat],axis=0)
+                    feat = np.concatenate([dino_feat,uni3d_feat],axis=0)    # 2048
                 elif self.dino_layer <= 0:
-                    feat = uni3d_feat
+                    feat = uni3d_feat           # 1024
                 elif self.uni3d_layer<=0:
-                    feat = dino_feat
-
-                if self.pca is not None:
-                    feat = self.pca.transform(feat.reshape(-1,32*32).transpose(1,0)).transpose(1,0).reshape(-1,32,32)     # 256,32,32
+                    feat = dino_feat            # 1024
             feats.append(feat)
 
             rgbs.append(rgb)

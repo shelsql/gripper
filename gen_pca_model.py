@@ -21,21 +21,27 @@ class PCALowrank():
     def __init__(self):
         self.V = None
         self.mean = None
+        # self.std = None
 
     def fit(self,X,q=256):
         X_mean = torch.mean(X,dim=0)
-        X_centered = X - X_mean
+        # X_std = torch.std(X,dim=0)
+        X_centered = (X - X_mean)# / X_std
         U,S,V = torch.pca_lowrank(X_centered,q=q)
         self.V = V
         self.mean = X_mean
+        # self.std = X_std
 
     def transform(self,X):
         if len(X.shape) == 1:
             X = X.unsqueeze(0)
         else:
             assert len(X.shape) == 2
-        X_centered = X - self.mean
+        X_centered = (X - self.mean)# / self.std
         return torch.matmul(X_centered,self.V)
+
+    # def normalize_only(self,X):
+    #     return (X - self.mean) / self.std
 
 
 class ReferenceDataset(Dataset):
@@ -55,7 +61,7 @@ class ReferenceDataset(Dataset):
         self.transform = transforms.Compose([
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
-        self.device = 'cpu'
+        self.device = 'cuda:0'
         if cfg.pca_type == 'torch':
             self.pca = PCALowrank()
         elif cfg.pca_type == 'sklearn':
@@ -169,6 +175,7 @@ class ReferenceDataset(Dataset):
         elif cfg.pca_type == 'torch':
             np.save(f'{self.dataset_location}/{pca_name}_pca_V',self.pca.V.cpu().numpy())
             np.save(f'{self.dataset_location}/{pca_name}_pca_mean',self.pca.mean.cpu().numpy())
+            # np.save(f'{self.dataset_location}/{pca_name}_pca_std',self.pca.std.cpu().numpy())
 
         for idx,glob_rgb_path in enumerate(self.rgb_paths):
             path = glob_rgb_path[:-8]
@@ -229,10 +236,10 @@ class ReferenceDataset(Dataset):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gripper_name',default='kinova',  help='single gripper_name')
+    parser.add_argument('--gripper_name',default='panda',  help='single gripper_name')
     parser.add_argument('--pca_type',default='torch',help='sklearn or torch')
-    parser.add_argument('--dino_layer',default=-1,type=int)
-    parser.add_argument('--uni3d_layer', default=19, type=int)
+    parser.add_argument('--dino_layer',default=19,type=int)
+    parser.add_argument('--uni3d_layer', default=-1, type=int)
     parser.add_argument('--ref_dir',default=f"/home/data/tianshuwu/data/ref_840")
     cfg = parser.parse_args()
     # gripper_name = ['robotiq2f140','robotiq2f85','robotiq3f','shadowhand','kinova','panda',]

@@ -924,7 +924,7 @@ def depth_map_to_pointcloud_tensor(depth_map, mask, intrinsics):
     # Create grid of pixel coordinates
     u, v = torch.meshgrid(torch.arange(W,device=depth_map.device), torch.arange(H,device=depth_map.device),indexing='xy')
     # Convert pixel coordinates to camera coordinates
-    x = (u - intrinsics[0,1]) * depth_map / intrinsics[0,0]
+    x = (u - intrinsics[0,2]) * depth_map / intrinsics[0,0]
     y = (v - intrinsics[1,2]) * depth_map / intrinsics[1,1]
     z = depth_map
 

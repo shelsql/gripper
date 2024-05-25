@@ -211,6 +211,9 @@ uni3d_use_color=False
                 assert (N_tokens == img_size * img_size / 196)
                 tokens = tokens.permute(0, 2, 1).reshape(B, C, img_size // 14, img_size // 14)
                 tokens = tokens / tokens.norm(dim=1, keepdim=True)      # 注意这里是新加的，cat之前要都除以norm
+
+
+
                 dino_path = path + f"feats_dino{uni3d_layer}.npy"
                 np.save(dino_path,tokens[0].cpu().numpy())
 
@@ -256,7 +259,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dino_layer', default=19,type=int)
 parser.add_argument('--uni3d_layer', default=19,type=int)
 cfg = parser.parse_args()
-gripper_list = ['kinova']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
+gripper_list = ['panda']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
 dino_layer = cfg.dino_layer
 uni3d_layer = cfg.uni3d_layer
 for gripper in gripper_list:

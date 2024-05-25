@@ -41,8 +41,12 @@ class Dinov2Matcher:
                  device="cuda:0",
                  uni3d_layer=19,
                  setting_name=None,
+                 dino_name=None,
+                 uni3d_name=None,
                  uni3d_color=False,
                  pca=None,
+                 dino_pca=None,
+                 uni3d_pca=None,
                  cfg=None):
         print("Initializing DinoV2 Matcher...")
         self.repo_name = repo_name
@@ -57,6 +61,8 @@ class Dinov2Matcher:
         self.setting_name = setting_name
         self.uni3d_color = uni3d_color
         self.cfg = cfg
+        self.dino_pca = dino_pca
+        self.uni3d_pca = uni3d_pca
 
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         num_refs, C, H, W = ref_rgbs.shape
@@ -127,12 +133,15 @@ class Dinov2Matcher:
         # TODO process ref images and calculate features
 
 
-        if self.cfg.pca_type =='torch':
+        if self.cfg.pca_type =='together':      # together就用setting name
             lowrank_str = '_lowrank'
-        elif self.cfg.pca_type == 'sklearn':
+        elif self.cfg.pca_type == 'nope':
             lowrank_str = ''
+        elif self.cfg.pca_type =='respective':
+            lowrank_str = '_lowrank_respective'
+            setting_name = dino_name + uni3d_name
 
-        if not os.path.exists(ref_dir + f'/{setting_name}_vision_word_list{lowrank_str}.npy'):   # todo 测试lowrank
+        if not os.path.exists(ref_dir + f'/{setting_name}_vision_word_list{lowrank_str}.npy'):
             print("Calculating BoW...")
             self.gen_and_save_refs_bags(setting_name,lowrank_str)
         #exit()
@@ -192,25 +201,28 @@ class Dinov2Matcher:
             dino_feat = self.extract_dino_features(cropped_rgbs)
             uni3d_feat = self.extract_uni3d_features(depths, masks, intrinsics, rgbs,bboxes,test_idx)
 
+            if self.dino_pca is not None:
+                dino_feat = self.dino_pca.transform(dino_feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)
+                uni3d_feat = self.uni3d_pca.transform(uni3d_feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)
+
             if (self.dino_layer>0) and (self.uni3d_layer>0):
-                feat = torch.cat([self.dino_feat,self.uni3d_feat],dim=0)
+                feat = torch.cat([dino_feat,uni3d_feat],dim=0)
             elif self.dino_layer <= 0:
-                feat = self.uni3d_feat
+                feat = uni3d_feat
             elif self.uni3d_layer<=0:
-                feat = self.dino_feat
-            self.dino_feat = None
-            self.uni3d_feat = None
+                feat = dino_feat
+
 
 
 
             if self.pca is not None:
 
-                if self.cfg.pca_type=='torch':
+                if self.cfg.pca_type=='together':
                     feat = self.pca.transform(feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)    # 256,32,32
                 elif self.cfg.pca_type=='sklearn':
                     feat = self.pca.transform(feat.cpu().numpy().reshape(-1, 32 * 32).transpose(1, 0)).transpose(1, 0).reshape(-1, 32,32)
                     feat = torch.tensor(feat,device=self.device,dtype=torch.float32)
-                feat = feat.unsqueeze(0)
+            feat = feat.unsqueeze(0)
 
         return feat # B, C, H, W
 
@@ -258,6 +270,7 @@ class Dinov2Matcher:
             geo_feat = geo_feat / geo_feat.norm(dim=-1, keepdim=True)  # cat之前都除以norm
 
             geo_center = geo_center + point_center
+
 
             projected_coordinates = intrinsic_matrix @ geo_center[0].transpose(-1, -2)
             projected_coordinates = (projected_coordinates[:2, :] / projected_coordinates[2, :]).transpose(-1, -2)

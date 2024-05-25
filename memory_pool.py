@@ -78,7 +78,7 @@ class MemoryPool():
         time_prepare_start  = time.time()
         self.test_camera_Ks.insert(0,frame['test_camera_K'])# np array
         self.gt_poses.insert(0,frame['gt_pose'])            # np array
-        self.paths.insert(0,frame['image_path'])
+        # self.paths.insert(0,frame['image_path'])
 
         if self.cfg.refine_mode == 'd':
             self.matches_3d_multi_view.insert(0,frame['matches_3d_multi_view'])      # tensor(98,6) different shape
@@ -259,7 +259,7 @@ class MemoryPool():
             self.matches_3ds.pop(eliminate_id)
 
         self.test_camera_Ks.pop(eliminate_id)
-        self.paths.pop(eliminate_id)
+        # self.paths.pop(eliminate_id)
         if self.cfg.use_depth:
             # self.keypoint_from_depths.pop(eliminate_id)
             self.depths.pop(eliminate_id)
@@ -1477,6 +1477,16 @@ def main_sim(cfg):
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
     ref_dir = f"{cfg.ref_dir}/{cfg.gripper}"
 
+    pca = None  # 一起pca
+
+    dino_pca = None
+    uni3d_pca = None
+
+    setting_name = None
+    dino_name = None
+    uni3d_name = None
+
+
     setting_name = ''
     if cfg.dino_layer>0:
         setting_name = setting_name + f'dino{cfg.dino_layer}'
@@ -1487,17 +1497,33 @@ def main_sim(cfg):
         else:
             setting_name = setting_name + 'nocolor'
 
-    assert (cfg.pca_type=='sklearn') or (cfg.pca_type=='torch')
-    if cfg.pca_type == 'sklearn':
-        pca = joblib.load(f'{ref_dir}/{setting_name}_pca_model.joblib')
-    elif cfg.pca_type=='torch':
+    if cfg.pca_type == 'together':
         pca = PCALowrank()
         pca.V = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
         pca.mean = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # pca.std = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_std.npy"),device=cfg.device,dtype=cfg.dtype)
+
+    elif cfg.pca_type == 'respective':
+        dino_name = f'dino{cfg.dino_layer}'
+        uni3d_name = f'uni3d{cfg.uni3d_layer}_'
+        if cfg.uni3d_color:
+            uni3d_name = uni3d_name + 'colored'
+        else:
+            uni3d_name = uni3d_name + 'nocolor'
+
+        dino_pca = PCALowrank()
+        dino_pca.V = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
+        dino_pca.mean = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # dino_pca.std = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_std.npy"),device=cfg.device,dtype=cfg.dtype)
+
+        uni3d_pca = PCALowrank()
+        uni3d_pca.V = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
+        uni3d_pca.mean = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # uni3d_pca.std = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_std.npy"), device=cfg.device,dtype=cfg.dtype)
 
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, dino_layer=cfg.dino_layer,pca=pca,uni3d_color=cfg.uni3d_color,setting_name=setting_name,cfg=cfg)
+    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, dino_layer=cfg.dino_layer,uni3d_layer=cfg.uni3d_layer,uni3d_color=cfg.uni3d_color,setting_name=setting_name,dino_name=dino_name,uni3d_name=uni3d_name,cfg=cfg)
 
     # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
@@ -1525,11 +1551,22 @@ def main_sim(cfg):
                             device=cfg.device,
                             uni3d_layer=cfg.uni3d_layer,
                             setting_name=setting_name,
+                            dino_name=dino_name,
+                            uni3d_name=uni3d_name,
                             uni3d_color=cfg.uni3d_color,
                             pca=pca,
+                            dino_pca=dino_pca,
+                            uni3d_pca=uni3d_pca,
                             cfg=cfg)
 
-    sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
+
+
+    if cfg.test_data_type == 'real':
+        sim_dataset = TrackingDataset(dataset_location=cfg.test_dir)
+        assert cfg.gripper == 'panda'
+    elif cfg.test_data_type == 'sim':
+        sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
+
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
     sim_loader = iter(sim_dataloader)
 
@@ -1611,7 +1648,7 @@ def main_sim(cfg):
                          'gt_pose': gt_poses[0],        # np array
                          'rt_matrix_multi_view': np.stack(rt_matrix_multi_view),    # np array
                          'test_camera_K': test_camera_Ks[0],    # np array
-                         'image_path':sim['video_path'][0]+f'/{i}',
+                         # 'image_path':sim['video_path'][0]+f'/{i}',
                          'depth':depths[0],
                          'num_inlier':num_inlier
                          # 'ref_pose_multi_view':ref_pose_multi_view,
@@ -1631,7 +1668,7 @@ def main_sim(cfg):
                          'gt_pose': gt_poses[0],  # np array
                          'rt_matrix': rt_matrixs[0],  # np array
                          'test_camera_K': test_camera_Ks[0],  # np array
-                         'image_path': sim['video_path'][0]+f'/{i}',
+                         # 'image_path': sim['video_path'][0]+f'/{i}',
                          'depth': depths[0],
                          }
             # frame: matches_3d,gt_pose,rt_matrix,camera_Ks
@@ -1670,7 +1707,7 @@ if __name__ == '__main__':
     parser.add_argument('--S', type=int, default=1, help='sequence length')
     parser.add_argument('--shuffle',default=False, action='store_true')
 
-    # parser.add_argument('--test_dir', type=str, default='/root/autodl-tmp/shiqian/datasets/Ty_data')
+    parser.add_argument('--test_dir', type=str, default='/home/data/tianshuwu/data/Ty_data')
     parser.add_argument('--dtype',default=torch.float32)
     parser.add_argument('--record_vis',default=False,action='store_true')
 
@@ -1685,21 +1722,22 @@ if __name__ == '__main__':
     parser.add_argument('--uni3d_color',default=False,action='store_true')  # 没效果，不用了
 
 
-    parser.add_argument('--use_depth',default=False, action='store_true')
-    parser.add_argument('--ref_dir', type=str, default='/home/data/tianshuwu/data/ref_840')
-    parser.add_argument('--max_iter',type=int, default=3)
+    parser.add_argument('--use_depth',default=True, action='store_true')
+    parser.add_argument('--ref_dir', type=str, default='/home/data/tianshuwu/data/ref_480')
+    parser.add_argument('--max_iter',type=int, default=30)
     parser.add_argument('--refine_mode',type=str,default='a')
     parser.add_argument('--max_number',type=int, default=0)
     parser.add_argument('--key_number',type=int,default=1)
-    parser.add_argument('--view_number',type=int,default=5)
+    parser.add_argument('--view_number',type=int,default=10)
     parser.add_argument('--gripper', type=str, default="kinova")
     parser.add_argument('--init',default='pnp')        # rela 或者 pnp，多帧优化时rela，单帧优化时pnp，同时要把refine mode改为a
     parser.add_argument('--result_fold_name',default='tmp')
-    parser.add_argument('--pca_type', default='torch', help='sklearn or torch')
 
+    # 只用dino时，要用together
+    parser.add_argument('--pca_type', default='together', help='together or respective or nope')
     parser.add_argument('--dino_layer', type=int, default=19)
-    parser.add_argument('--uni3d_layer',type=int,default=19)
-
+    parser.add_argument('--uni3d_layer',type=int,default=-1)
+    parser.add_argument('--test_data_type',default='sim', help='sim or real')
 
     cfg = parser.parse_args()
     # main_ty(cfg)
