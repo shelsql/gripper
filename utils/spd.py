@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import _pickle as cPickle
 from tqdm import tqdm
-
+import time
 import torch
 from torch.masked import masked_tensor, as_masked_tensor
 import warnings
@@ -937,7 +937,6 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     
     # Create grid of pixel coordinates
     u, v = np.meshgrid(np.arange(W), np.arange(H))
-    
     # Convert pixel coordinates to camera coordinates
     x = (u - cx) * depth_map.cpu().numpy() / fx
     y = (v - cy) * depth_map.cpu().numpy() / fy
@@ -950,12 +949,34 @@ def depth_map_to_pointcloud(depth_map, mask, intrinsics):
     
     # Stack into point cloud
     pointcloud = np.stack((x, y, z), axis=-1)
-    
     pointcloud = pointcloud[pointcloud[:,2] > 0]
-    
     return pointcloud
 
-    
+
+def depth_map_to_pointcloud_tensor(depth_map, mask, intrinsics):
+    # Get dimensions
+    H, W = depth_map.shape
+
+    if mask is not None:
+        depth_map[mask == 0] = -1
+
+
+    # Create grid of pixel coordinates
+    u, v = torch.meshgrid(torch.arange(W,device=depth_map.device), torch.arange(H,device=depth_map.device),indexing='xy')
+    # Convert pixel coordinates to camera coordinates
+    x = (u - intrinsics[0,2]) * depth_map / intrinsics[0,0]
+    y = (v - intrinsics[1,2]) * depth_map / intrinsics[1,1]
+    z = depth_map
+
+    # Reshape to (B*S, H*W)
+    x = x.reshape(-1)
+    y = y.reshape(-1)
+    z = z.reshape(-1)
+
+    # Stack into point cloud
+    pointcloud = torch.stack((x, y, z), dim=-1)
+    pointcloud = pointcloud[z > 0]
+    return pointcloud
 
 def image_coords_to_camera_space(depth_map, coords_2d, intrinsics):
     

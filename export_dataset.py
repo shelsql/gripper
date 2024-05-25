@@ -1,7 +1,10 @@
+import argparse
 import sys
 import os
 import json
 import glob
+import time
+
 import torch
 from PIL import Image
 import numpy as np
@@ -9,8 +12,7 @@ from tqdm import tqdm
 import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms
-from matcher import Dinov2Matcher
-from utils.spd import get_2dbboxes,depth_map_to_pointcloud, create_3dmeshgrid,transform_batch_pointcloud_torch,calculate_2d_projections
+from utils.spd import get_2dbboxes,depth_map_to_pointcloud, create_3dmeshgrid,transform_batch_pointcloud_torch,calculate_2d_projections,depth_map_to_pointcloud_tensor
 import torch.nn.functional as F
 from models.uni3d import create_uni3d
 
@@ -63,9 +65,10 @@ def save_features(
     dataset_location = "./ref_views/powerdrill_69.4_840",
     layer = 23,
     device = "cuda:0",
-    use_3d_feature=False,
+    use_3d_feature=True,
     get_2d_feature=True,
-        uni3d_layer=23
+        uni3d_layer=23,
+uni3d_use_color=False
 ):
     print("Saving features from layer %d to %s" % (layer, dataset_location))
     print("Using device %s" % device)
@@ -107,8 +110,8 @@ def save_features(
     #print(rgbs.shape, depths.shape, masks.shape, c2ws.shape, obj_poses.shape)
     rgbs = torch.tensor(rgbs).float().permute(0, 3, 1, 2) # N, 3, H, W
     masks = torch.tensor(masks).float().permute(0, 3, 1, 2) # N, 1, H, W
-    depths = torch.tensor(depths,device=device).float().permute(0, 3, 1, 2)
-
+    depths = torch.tensor(depths).float().permute(0, 3, 1, 2)
+    rgbs[masks.repeat(1, 3, 1, 1) == 0] = 0
     N, C, H, W = rgbs.shape
     img_size = 448
 
@@ -133,7 +136,7 @@ def save_features(
         
     cropped_rgbs = transform(cropped_rgbs)
     cropped_rgbs = cropped_rgbs.to(device)
-    cropped_rgbs[cropped_masks.repeat(1,3,1,1) == 0] = 0 # Mask out background
+    # cropped_rgbs[cropped_masks.repeat(1,3,1,1) == 0] = 0 # Mask out background 在外面细粒度的mask过了
     bboxes = torch.tensor(bboxes, device = device)
 
     #rgb_0 = cropped_rgbs[20].permute(1, 2, 0).cpu().numpy()
@@ -146,41 +149,31 @@ def save_features(
 
 
 
-    batch_size = 1
-    num_batches = (N + batch_size - 1) // batch_size
-    all_tokens = torch.zeros((N, 1024, 32, 32), device=device)
-
-    if get_2d_feature:
-        with torch.inference_mode():
-            for i in tqdm(range(num_batches)):
-                start_idx = i * batch_size
-                end_idx = min(N, (i + 1) * batch_size)
-                image_batch = cropped_rgbs[start_idx:end_idx]
-                tokens = dinov2.get_intermediate_layers(image_batch, n=[layer])[0]
-                B, N_tokens, C = tokens.shape
-                assert (N_tokens == img_size * img_size / 196)
-                tokens = tokens.permute(0, 2, 1).reshape(B, C, img_size // 14, img_size // 14)
-                tokens = tokens / tokens.norm(dim=1, keepdim=True)      # 注意这里是新加的，cat之前要都除以norm
-                all_tokens[start_idx:end_idx] = tokens
-        # print(tokens.shape)
-        # print(tokens.max(), tokens.min(), tokens.mean())
-        print(all_tokens.shape)  # 840, 1024, 32, 32
-        print("Saving features...")
-        for i in tqdm(range(N)):
-            path = rgb_paths[i][:-7]
-            feat_path = path + "feats_%.2d.npy" % layer
-            # np.save(feat_path, all_tokens[i].cpu().numpy())
 
     if use_3d_feature:
         with torch.inference_mode():
             for i in tqdm(range(rgbs.shape[0])):
-                # step1 先从深度图还原点云，获得512个feature及该group中心坐标
+
+
+                # # step1 先从深度图还原点云，获得512个feature及该group中心坐标
                 # 点云要先中心化，但是投影回去的时候不要忘了再把中心位置加回去，不然patch找自己的geo feature时会找歪         重要！！
-                point_cloud = torch.tensor(depth_map_to_pointcloud(depths[i][0], masks[i][0], camera_intrinsic),device=device,dtype=torch.float32)
+
+                depth_tmp = depths[i][0].to(device)
+                mask_tmp = masks[i][0].to(device)
+                time0 = time.time()
+                point_cloud = depth_map_to_pointcloud_tensor(depth_tmp,mask_tmp, intrinsic_matrix)
+
+                time1 = time.time()
+                # print('map_depth_time:',time1-time0)
                 point_center = point_cloud.mean(0)
                 point_cloud = point_cloud - point_center
-                non_rgb = torch.ones_like(point_cloud)
-                geo_feat, geo_center = uni3d.encode_pc(torch.cat([point_cloud.unsqueeze(0), non_rgb.unsqueeze(0)], dim=-1), layer=uni3d_layer)
+                if uni3d_use_color:
+                    rgb = rgbs[i][:,masks[i][0].bool()].transpose(-1,-2).to(device)
+                else:
+                    rgb = torch.ones_like(point_cloud)
+
+                geo_feat, geo_center = uni3d.encode_pc(torch.cat([point_cloud.unsqueeze(0), rgb.unsqueeze(0)], dim=-1), layer=uni3d_layer)
+
                 geo_feat = geo_feat / geo_feat.norm(dim=-1,keepdim=True)        # cat之前都除以norm
                 geo_center = geo_center + point_center
 
@@ -200,17 +193,32 @@ def save_features(
                 cor_id = dis.min(dim=1).indices # 307？,范围为（0~512）
 
                 geo_feat_image = torch.zeros((1024,32,32),device=device)
-                geo_feat_image[:,test_idx[:,1],test_idx[:,2]] = geo_feat[0,1:,:][cor_id].transpose(-1,-2)   # 768,32,32 mask之外是全0
-
+                geo_feat_image[:,test_idx[:,1],test_idx[:,2]] = geo_feat[0,1:,:][cor_id].transpose(-1,-2)   # 1024,32,32 mask之外是全0
                 path = rgb_paths[i][:-7]
-                feat_path = path + "feats_catgeo_%.2d.npy" % uni3d_layer
+                if uni3d_use_color:
+                    uni3d_path = path + f"feats_uni3d{uni3d_layer}_colored.npy"
+                else:
+                    uni3d_path = path + f"feats_uni3d{uni3d_layer}_nocolor.npy"
+                np.save(uni3d_path, geo_feat_image.cpu().numpy())
 
-                cat_feat = torch.cat([all_tokens[i],geo_feat_image],dim=0)
-                # cat_feat = geo_feat_image     # 试一下直接只用geo feature的效果
-                np.save(feat_path,cat_feat.cpu().numpy())
 
 
-                # test_3d_coords = coords_2d_to_3d(test_2d_coords, depths[i], camera_intrinsic,torch.eye(4, device=device))  # 这个是在3d中的点云坐标
+
+
+                image_batch = cropped_rgbs[i:i+1]
+                tokens = dinov2.get_intermediate_layers(image_batch, n=[layer])[0]
+                B, N_tokens, C = tokens.shape
+                assert (N_tokens == img_size * img_size / 196)
+                tokens = tokens.permute(0, 2, 1).reshape(B, C, img_size // 14, img_size // 14)
+                tokens = tokens / tokens.norm(dim=1, keepdim=True)      # 注意这里是新加的，cat之前要都除以norm
+
+
+
+                dino_path = path + f"feats_dino{uni3d_layer}.npy"
+                np.save(dino_path,tokens[0].cpu().numpy())
+
+
+
 
 
 
@@ -243,13 +251,25 @@ if next(iter(sd.items()))[0].startswith('module'):
     sd = {k[len('module.'):]: v for k, v in sd.items()}
 uni3d.load_state_dict(sd)
 
-uni3d_layer = 19
-save_features('/root/autodl-tmp/shiqian/datasets/reference_views/panda', 19, "cuda:0",use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer)
+# dino_layer = 19
+# uni3d_layer = 19
+uni3d_use_color = False
 
-path = '/root/autodl-tmp/shiqian/datasets/final_20240419/panda'
-subdirs = glob.glob(path + "/videos/*")
-videos = []
-for subdir in subdirs:
-    videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
-for video in videos:
-    save_features(video, 19, "cuda:0",use_3d_feature=True,get_2d_feature=True,uni3d_layer =uni3d_layer)
+parser = argparse.ArgumentParser()
+parser.add_argument('--dino_layer', default=19,type=int)
+parser.add_argument('--uni3d_layer', default=19,type=int)
+cfg = parser.parse_args()
+gripper_list = ['panda']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
+dino_layer = cfg.dino_layer
+uni3d_layer = cfg.uni3d_layer
+for gripper in gripper_list:
+    save_features(f'/home/data/tianshuwu/data/ref_840/{gripper}', dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
+# for gripper in gripper_list:
+#     save_features(f'/root/autodl-tmp/shiqian/code/render/reference_more/{gripper}', 19, "cuda:0",use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=False)
+# path = '/root/autodl-tmp/shiqian/datasets/final_20240419/panda'
+# subdirs = glob.glob(path + "/videos/*")
+# videos = []
+# for subdir in subdirs:
+#     videos.extend(sorted(glob.glob(subdir + "/0*"))[:10])
+# for video in videos:
+#     save_features(video, 19, "cuda:0",use_3d_feature=True,get_2d_feature=True,uni3d_layer =uni3d_layer)

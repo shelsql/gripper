@@ -13,16 +13,17 @@ import time
 
 from utils.spd import get_2dbboxes, create_3dmeshgrid, transform_batch_pointcloud_torch
 from utils.spd import save_pointcloud, transform_pointcloud_torch, project_points
-from utils.spd import depth_map_to_pointcloud, read_pointcloud, transform_pointcloud
+from utils.spd import depth_map_to_pointcloud, read_pointcloud, transform_pointcloud,depth_map_to_pointcloud_tensor
 # from utils.spd import calc_masked_batch_var, calc_coords_3d_var
 from utils.quaternion_utils import *
 
+
+import threading
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import KMeans
 from models.uni3d import create_uni3d
-
 
 def print_time(msg, last_time):
     now_time = time.time()
@@ -31,26 +32,37 @@ def print_time(msg, last_time):
 
 class Dinov2Matcher:
     def __init__(self, ref_dir, refs, model_pointcloud,
-                 feat_layer,
+                 dino_layer,
                  repo_name="facebookresearch/dinov2",
                  model_name="dinov2_vitl14_reg",
                  size=448,
                  threshold=0.8,
                  upscale_ratio=1,
                  device="cuda:0",
-                 use_geo_type=None,
-                 layer_3d=-1):
+                 uni3d_layer=19,
+                 setting_name=None,
+                 dino_name=None,
+                 uni3d_name=None,
+                 uni3d_color=False,
+                 pca=None,
+                 dino_pca=None,
+                 uni3d_pca=None,
+                 cfg=None):
         print("Initializing DinoV2 Matcher...")
         self.repo_name = repo_name
         self.model_name = model_name
         self.size = size
         self.threshold = threshold
         self.upscale_ratio = upscale_ratio
-        self.feat_layer = feat_layer
+        self.pca=pca
         self.device = device
         self.patch_size = 14
         self.ref_dir = ref_dir
-
+        self.setting_name = setting_name
+        self.uni3d_color = uni3d_color
+        self.cfg = cfg
+        self.dino_pca = dino_pca
+        self.uni3d_pca = uni3d_pca
 
         ref_rgbs = torch.Tensor(refs['rgbs']).float().permute(0, 1, 4, 2, 3).squeeze() # B, S, C, H, W
         num_refs, C, H, W = ref_rgbs.shape
@@ -87,17 +99,25 @@ class Dinov2Matcher:
         ])
         print("Preprocessing reference views...")
         cropped_ref_rgbs, cropped_ref_masks, ref_bboxes = self.prepare_images(ref_images)
-        if refs['feats'] is None:
+
+        self.dino_layer = dino_layer
+        if dino_layer>0:
             self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
             self.model.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.pth'))
             self.model.to(self.device)
             self.model.eval()
-            #print("Calculating reference view features...")
 
-            #print(cropped_ref_rgbs.shape)
-            self.ref_features = self.extract_features(cropped_ref_rgbs,ref_bboxes)
-        else:
-            self.ref_features = torch.tensor(refs['feats'])[0].float().to(device)
+        # if refs['feats'] is None:
+        #     self.model = torch.hub.load(repo_or_dir="../dinov2",source="local", model=model_name, pretrained=False)
+        #     self.model.load_state_dict(torch.load('./dinov2_weights/dinov2_vitl14_reg4_pretrain.pth'))
+        #     self.model.to(self.device)
+        #     self.model.eval()
+        #     #print("Calculating reference view features...")
+        #
+        #     #print(cropped_ref_rgbs.shape)
+        #     self.ref_features = self.extract_features(cropped_ref_rgbs,ref_bboxes)
+        # else:
+        self.ref_features = torch.tensor(refs['feats'])[0].float().to(device)   # ref的feature肯定要提前提好
         print("Reference view features obtained")
 
         N_refs, feat_C, feat_H, feat_W = self.ref_features.shape
@@ -112,23 +132,24 @@ class Dinov2Matcher:
         #self.vis_features(cropped_ref_rgbs, self.feat_masks, self.ref_features)
         # TODO process ref images and calculate features
 
-        if use_geo_type is not None:
-            if not os.path.exists(ref_dir + f'/vision_word_list_{use_geo_type}.npy'):
-                print("Calculating BoW...")
-                _,_ = self.gen_and_save_refs_bags(use_geo_type)
-            #exit()
-            self.vision_word_list = np.load(ref_dir + f'/vision_word_list_{use_geo_type}.npy') # 2048xc
-            self.ref_bags = np.load(ref_dir + f'/ref_bags_{use_geo_type}.npy')
-        else:
-            if not os.path.exists(ref_dir + '/vision_word_list.npy'):
-                print("Calculating BoW...")
-                _,_ = self.gen_and_save_refs_bags()
-            #exit()
-            self.vision_word_list = np.load(ref_dir + '/vision_word_list.npy') # 2048x1024
-            self.ref_bags = np.load(ref_dir + '/ref_bags.npy')
 
-        self.pca_2d = None  # TODO
-        if use_geo_type is not None:
+        if self.cfg.pca_type =='together':      # together就用setting name
+            lowrank_str = '_lowrank'
+        elif self.cfg.pca_type == 'nope':
+            lowrank_str = ''
+        elif self.cfg.pca_type =='respective':
+            lowrank_str = '_lowrank_respective'
+            setting_name = dino_name + uni3d_name
+
+        if not os.path.exists(ref_dir + f'/{setting_name}_vision_word_list{lowrank_str}.npy'):
+            print("Calculating BoW...")
+            self.gen_and_save_refs_bags(setting_name,lowrank_str)
+        #exit()
+        self.vision_word_list = np.load(ref_dir + f'/{setting_name}_vision_word_list{lowrank_str}.npy') # 2048xc
+        self.ref_bags = np.load(ref_dir + f'/{setting_name}_ref_bags{lowrank_str}.npy')
+
+        self.uni3d_layer = uni3d_layer
+        if self.uni3d_layer>0:
             self.uni3d = create_uni3d().to(self.device)
             checkpoint = torch.load("checkpoints/model_large.pt", map_location='cpu')
             sd = checkpoint['module']
@@ -157,44 +178,120 @@ class Dinov2Matcher:
             cropped_masks[b:b+1] = cropped_mask
         cropped_rgbs = self.transform(cropped_rgbs)
         cropped_rgbs = cropped_rgbs.to(self.device)
+        # cropped_rgbs[cropped_masks.repeat(1, 3, 1, 1) == 0] = 0  # Mask out background
         bboxes = torch.tensor(bboxes, device = self.device)
         #print(bboxes)
         return cropped_rgbs, cropped_masks, bboxes
     
-    def extract_features(self, images,depths,use_3d_feature=False,masks=None,intrinsics=None, cropped_masks=None,bboxes=None):
-        # images: B, C, H, W  torch.tensor
-        b,c,h,w = images.shape
+    def extract_features(self, cropped_rgbs=None,rgbs=None,depths=None,masks=None,intrinsics=None, cropped_masks=None,bboxes=None,test_idx=None):
+        # images: B, C, H, W  torch.tensor      B始终等于1
+        # b,c,h,w = images.shape
         #print(images.max(), images.min(), images.mean())
         with torch.inference_mode():
-            image_batch = images.to(self.device)
-
-            tokens = self.model.get_intermediate_layers(image_batch, n = [self.feat_layer])[0]
-            B, N_tokens, C = tokens.shape
-            assert(N_tokens == self.size*self.size / 196)
-            tokens = tokens.permute(0,2,1).reshape(B, C, self.size//14, self.size//14)
-            if self.upscale_ratio != 1:
-                tokens = F.interpolate(tokens, scale_factor = self.upscale_ratio)
-
-            # 3D的特征
-            if use_3d_feature:
-
-                # step1 先从深度图还原点云，获得512个feature及该group中心坐标
-                point_cloud = depth_map_to_pointcloud(depths,masks,intrinsics)
-                non_rgb = torch.ones_like(point_cloud)
-                geo_feat = self.uni3d.encode_pc(torch.cat([point_cloud,non_rgb],dim=-1),layer=11)
-
-                # step2 为mask之内的点找到最近的那个点云，把它的feature拿来用
-                test_idxs = create_3dmeshgrid(b,h,w,self.device)
-                batch_feat_masks = F.interpolate(cropped_masks, size=(h, w), mode="nearest")
-                test_idxs = test_idxs[batch_feat_masks[:,0]>0]  # 287?,3 这个是在32*32中的坐标
-                test_2d_coords = self.idx_to_2d_coords(test_idxs,bboxes)    # 这个是在360,640中的坐标
-                test_3d_coords = self.coords_2d_to_3d(test_2d_coords,depths,intrinsics,torch.eye(4,device=self.device))     # 这个是在3d中的点云坐标
 
 
+            # uni3d_thread = threading.Thread(target=self.extract_dino_features, args=(cropped_rgbs))
+            # dino_thread = threading.Thread(target=self.extract_uni3d_features, args=(depths, masks, intrinsics, rgbs,bboxes,test_idx))
+            #
+            # uni3d_thread.start()
+            # dino_thread.start()
+            #
+            # uni3d_thread.join()
+            # dino_thread.join()
+            dino_feat = self.extract_dino_features(cropped_rgbs)
+            uni3d_feat = self.extract_uni3d_features(depths, masks, intrinsics, rgbs,bboxes,test_idx)
 
-            #print(tokens.shape)
-            #print(tokens.max(), tokens.min(), tokens.mean())
-        return tokens # B, C, H, W
+            if self.dino_pca is not None:
+                dino_feat = self.dino_pca.transform(dino_feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)
+                uni3d_feat = self.uni3d_pca.transform(uni3d_feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)
+
+            if (self.dino_layer>0) and (self.uni3d_layer>0):
+                feat = torch.cat([dino_feat,uni3d_feat],dim=0)
+            elif self.dino_layer <= 0:
+                feat = uni3d_feat
+            elif self.uni3d_layer<=0:
+                feat = dino_feat
+
+
+
+
+            if self.pca is not None:
+
+                if self.cfg.pca_type=='together':
+                    feat = self.pca.transform(feat.reshape(-1, 32 * 32).transpose(1, 0)).transpose(1,0).reshape(-1,32,32)    # 256,32,32
+                elif self.cfg.pca_type=='sklearn':
+                    feat = self.pca.transform(feat.cpu().numpy().reshape(-1, 32 * 32).transpose(1, 0)).transpose(1, 0).reshape(-1, 32,32)
+                    feat = torch.tensor(feat,device=self.device,dtype=torch.float32)
+            feat = feat.unsqueeze(0)
+
+        return feat # B, C, H, W
+
+    def extract_dino_features(self,cropped_rgbs):
+        if self.dino_layer > 0:     # ??怎么偷偷给我把第一个维度删了呢？？
+            if len(cropped_rgbs.shape) == 4:
+                image_batch = cropped_rgbs[0:0 + 1]
+            else:
+                image_batch = cropped_rgbs.unsqueeze(0)
+            dino_feat = self.model.get_intermediate_layers(image_batch, n=[self.dino_layer])[0]
+            B, N_tokens, C = dino_feat.shape
+            img_size = 448
+            assert (N_tokens == img_size * img_size / 196)
+            dino_feat = dino_feat.permute(0, 2, 1).reshape(B, C, img_size // 14, img_size // 14)
+            dino_feat = dino_feat / dino_feat.norm(dim=1, keepdim=True)  # 注意这里是新加的，cat之前要都除以norm
+            self.dino_feat = dino_feat[0]
+            return dino_feat[0]
+        else:
+            return None
+
+    def extract_uni3d_features(self,depths, masks, intrinsics, rgbs,bboxes,test_idx):
+        intrinsic_matrix = torch.zeros((3, 3), device=self.device)
+        intrinsic_matrix[0, 0] = intrinsics['fx']
+        intrinsic_matrix[1, 1] = intrinsics['fy']
+        intrinsic_matrix[0, 2] = intrinsics['cx']
+        intrinsic_matrix[1, 2] = intrinsics['cy']
+        intrinsic_matrix[2, 2] = 1
+
+        if self.uni3d_layer > 0:
+            # step1 先从深度图还原点云，获得512个feature及该group中心坐标
+            # 点云要先中心化，但是投影回去的时候不要忘了再把中心位置加回去，不然patch找自己的geo feature时会找歪         重要！！
+
+            point_cloud = depth_map_to_pointcloud_tensor(depths[0][0], masks[0][0], intrinsic_matrix)  # 从5ms优化到了0.5ms
+
+            point_center = point_cloud.mean(0)
+            point_cloud = point_cloud - point_center
+            if self.uni3d_color:
+                rgb = rgbs[0][:, masks[0][0].bool()].transpose(-1, -2).to(self.device) / 255.0  # 在这里选要不要用颜色
+            else:
+                rgb = torch.ones_like(point_cloud)
+
+            geo_feat, geo_center = self.uni3d.encode_pc(torch.cat([point_cloud.unsqueeze(0), rgb.unsqueeze(0)], dim=-1),
+                                                        layer=self.uni3d_layer)
+
+            geo_feat = geo_feat / geo_feat.norm(dim=-1, keepdim=True)  # cat之前都除以norm
+
+            geo_center = geo_center + point_center
+
+
+            projected_coordinates = intrinsic_matrix @ geo_center[0].transpose(-1, -2)
+            projected_coordinates = (projected_coordinates[:2, :] / projected_coordinates[2, :]).transpose(-1, -2)
+            proj_2d = torch.zeros_like(projected_coordinates)
+            proj_2d[:, 0] = projected_coordinates[:, 1]
+            proj_2d[:, 1] = projected_coordinates[:, 0]
+
+            # step2 把512个点云投到2d，每个patch直接用最近的那个作为自己的geo feature
+
+            test_2d_coords = self.idx_to_2d_coords(test_idx, bboxes[0:0 + 1])  # 这个是在360,640中的坐标
+
+            dis = torch.norm(test_2d_coords[:, 1:].unsqueeze(1) - proj_2d.unsqueeze(0), dim=-1)  # 307?,512
+            cor_id = dis.min(dim=1).indices  # 307？,范围为（0~512）
+
+            uni3d_feat = torch.zeros((1024, 32, 32), device=self.device)
+            uni3d_feat[:, test_idx[:, 1], test_idx[:, 2]] = geo_feat[0, 1:, :][cor_id].transpose(-1,-2)  # 1024,32,32 mask之外是全0
+
+            self.uni3d_feat = uni3d_feat
+            return uni3d_feat
+        else:
+            return None
     
     def idx_to_2d_coords_2(self, idxs, feat_size, test_bboxes):
         N, D = idxs.shape # batchno, featidx, refno, featidx
@@ -540,11 +637,13 @@ class Dinov2Matcher:
 
         return ref_centers,matches_3d_list
 
-    def match_batch(self, sample, step=0, N_select=1,refine_mode='a',gt_pose=None,cluster=False):
+    def match_batch(self, sample, step=0, N_select=1,refine_mode='a',gt_pose=None,cluster=False,time_statistics_dict=None):
         timestamp = time.time()
+        time0 = time.time()
         rgbs = torch.Tensor(sample['rgb']).float().to(self.device) # B, C, H, W
         depths = torch.Tensor(sample['depth']).float().to(self.device)
         masks = torch.Tensor(sample['mask']).float().to(self.device)
+        intrinsics = sample['intrinsics']
         if len(rgbs.shape) == 5:
             rgbs = rgbs[0]
             depths = depths[0]
@@ -562,8 +661,24 @@ class Dinov2Matcher:
         feat_size = feat_H
         #timestamp = print_time("Load data", timestamp)
         cropped_rgbs, cropped_masks, bboxes = self.prepare_images(images)
+
+        time0 = time.time()
+        batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
+        time1 = time.time()
+        test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
+        time2 = time.time()
+        test_idxs = test_idxs[0][batch_feat_masks[0,0] > 0] # N_batch_pts(287?), 3     在32*32中的坐标
+        time3 = time.time()
+        time_statistics_dict['interpolate time'].append(time1-time0)
+        time_statistics_dict['3dmesh time'].append(time2-time1)
+        time_statistics_dict['mask time'].append(time3-time2)
+
         if sample['feat'] is None:
-            features = self.extract_features(cropped_rgbs,depths) # B, 1024, 32, 32
+
+            features = self.extract_features(cropped_rgbs=cropped_rgbs,rgbs=rgbs,depths=depths,masks=masks,intrinsics=intrinsics,cropped_masks=cropped_masks,bboxes=bboxes,test_idx=test_idxs) # B, 1024, 32, 32
+            extra_end = time.time()
+            # print("Feature extraction took",extra_end-time3,"s")
+            time_statistics_dict['extract feature time'].append(extra_end-time3)
         else:
             features = torch.tensor(sample['feat']).float().to(self.device)
             #print(features.shape)
@@ -572,16 +687,17 @@ class Dinov2Matcher:
         N_tokens = feat_H * feat_W
         #print(features.shape)
         features = features.permute(0, 2, 3, 1).reshape(N_tokens, feat_C) # B*N, C
-        
-        batch_feat_masks = F.interpolate(cropped_masks, size=(feat_H, feat_W), mode = "nearest") # B, 1, 32, 32
-        test_idxs = create_3dmeshgrid(B, feat_H, feat_W, self.device)
-        test_idxs = test_idxs[batch_feat_masks[:,0] > 0] # N_batch_pts(287?), 3     在32*32中的坐标
+
+
         #timestamp = print_time("Prepare data", timestamp)
 
         matches_3d_list = []
         ref_pose_list = []
+
+        time_ref_start = time.time()
         selected_refs = self.select_refs(features, batch_feat_masks, B, test_idxs, n=N_select,gt_pose=None).reshape(-1)  # TODO 现在只能batch=1
-        #timestamp = print_time("Select refs", timestamp)
+        time_ref_end = time.time()
+        time_statistics_dict['select ref time'].append(time_ref_end-time_ref_start)
         if refine_mode == 'c':
             selected_refs = selected_refs.unsqueeze(0)
         for i,idx in enumerate(selected_refs):
@@ -628,9 +744,12 @@ class Dinov2Matcher:
 
             max_sims, max_inds = torch.max(cosine_sims, axis = 1)
             good_matches = max_sims > self.threshold
-            if good_matches.sum() < 4:
+            tmp_threhold = self.threshold
+            while good_matches.sum() < 4:
                 print("Not enough good matches, lowering threshold")
-                good_matches = max_sims > (self.threshold - 0.1)
+                tmp_threhold = tmp_threhold-0.1
+                good_matches = max_sims > tmp_threhold
+
             max_inds = max_inds[good_matches]
             match_2d_coords = test_2d_coords[good_matches]
             match_3d_coords = ref_3d_coords[max_inds,1:]
@@ -640,7 +759,8 @@ class Dinov2Matcher:
             ref_pose_list.append(self.ref_c2ws[idx])     # list of tensors
             #timestamp = print_time("Choose matches", timestamp)
         #print(matches_3d.shape)
-
+        time_match_end = time.time()
+        time_statistics_dict['match time'].append(time_match_end-time_ref_end)
         return matches_3d_list, ref_pose_list,selected_refs
 
     def match_2d_to_3d(self, matches_2d):
@@ -890,7 +1010,7 @@ class Dinov2Matcher:
             rgb *= 255
             cv2.imwrite("./match_vis/cropped_rgb_%.2d.png" % i, rgb)
 
-    def gen_and_save_refs_bags(self,use_geo_type=None):
+    def gen_and_save_refs_bags(self,setting_name=None,lowrank_str=None):
         N_refs,feat_C,feat_H,feat_W = self.ref_features.shape
         ref_features = self.ref_features.permute(0,2,3,1)       # nref,32,32,1024
         ref_features = ref_features[self.feat_masks[:,0]>0]     # n_ref_pts(26326),1024
@@ -917,14 +1037,11 @@ class Dinov2Matcher:
                 ref_bags[ref_img_ids[i],indice] += dis
 
         ref_bags = np.array(ref_bags.cpu())
-        if use_geo_type is not None:
-            np.save(self.ref_dir + f'/ref_bags_{use_geo_type}.npy',ref_bags)
-            np.save(self.ref_dir + f'/vision_word_list_{use_geo_type}.npy',centers)
-        else:
-            np.save(self.ref_dir + f'/ref_bags.npy',ref_bags)
-            np.save(self.ref_dir + f'/vision_word_list.npy',centers)
 
-        return centers, ref_bags
+        np.save(self.ref_dir + f'/{setting_name}_ref_bags{lowrank_str}.npy',ref_bags)
+        np.save(self.ref_dir + f'/{setting_name}_vision_word_list{lowrank_str}.npy',centers)
+
+        return
 
     def select_refs(self,features,batch_feat_mask,b,test_idxs, n,gt_pose=None):
         # B*N,C
@@ -967,20 +1084,20 @@ class Dinov2Matcher:
         bag_cos_sim = pairwise_cosine_similarity(test_bags,torch.tensor(self.ref_bags,device=self.device))   # b,v
         _,sorted_view_indices = torch.sort(bag_cos_sim,dim=1,descending=True)
 
-        if gt_pose is not None:
-            r_errors = []
-            t_errors = []
-            gt_pose = gt_pose
-            ref_poses = self.ref_c2ws.detach().cpu().numpy()
-
-            for i in range(ref_poses.shape[0]):
-                R1 = gt_pose[:3, :3] / np.cbrt(np.linalg.det(gt_pose[:3, :3]))
-                R2 = ref_poses[i, :3, :3] / np.cbrt(np.linalg.det(ref_poses[i, :3, :3]))
-                R = R1 @ R2.transpose()
-                theta = np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)) * 180 / np.pi
-                r_errors.append(theta)
-            r_errors = np.stack(r_errors, axis=0)
-            return np.argsort(r_errors)[0]
+        # if gt_pose is not None:
+        #     r_errors = []
+        #     t_errors = []
+        #     gt_pose = gt_pose
+        #     ref_poses = self.ref_c2ws.detach().cpu().numpy()
+        #
+        #     for i in range(ref_poses.shape[0]):
+        #         R1 = gt_pose[:3, :3] / np.cbrt(np.linalg.det(gt_pose[:3, :3]))
+        #         R2 = ref_poses[i, :3, :3] / np.cbrt(np.linalg.det(ref_poses[i, :3, :3]))
+        #         R = R1 @ R2.transpose()
+        #         theta = np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)) * 180 / np.pi
+        #         r_errors.append(theta)
+        #     r_errors = np.stack(r_errors, axis=0)
+        #     return np.argsort(r_errors)[0]
 
         return sorted_view_indices[:,:n]
 
