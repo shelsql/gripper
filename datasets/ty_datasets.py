@@ -85,8 +85,7 @@ class TrackingDataset(Dataset):
     def __init__(self,
                  dataset_location="/root/autodl-tmp/shiqian/datasets/Ty_data",
                  seqlen=32,
-                 strides=[1],
-                 features=23
+                 features=19
                  ):
         super().__init__()
         print("Loading pose tracking dataset...")
@@ -101,26 +100,25 @@ class TrackingDataset(Dataset):
             self.img_paths[video] = [path[:-4] for path in sorted(glob.glob(video + "/*.png"))]
         
         self.all_videos = []
-        self.all_full_idx = []
-        
         for video in self.video_dirs:
-            for stride in strides:
-                S_local = len(self.img_paths[video])
-                for ii in range(0, max(S_local-self.seqlen*stride,1), self.seqlen):
-                    # print('bbox_areas[%d]' % ii, bbox_areas[ii])
-                    full_idx = ii + np.arange(self.seqlen)*stride
-                    full_idx = [ij for ij in full_idx if ij < S_local]
-                    self.all_videos.append(video)
-                    self.all_full_idx.append(full_idx)
-        
+            vid = {}
+            vid["dir"] = video
+            filelist = open("%s/camera_static_frames.txt" % video).readlines()
+            vid["filelist"] = filelist
+            
+            self.all_videos.append(vid)
+            
+            
+            
     def __getitem__(self, index):
-        video_dir = self.all_videos[index]
-        full_idx = self.all_full_idx[index]
+        video = self.all_videos[index]
+        video_dir = video["dir"]
+        imgid_list = video["filelist"]
         camera_intrinsic_path = os.path.join(video_dir, "_camera_settings.json")
         camera_intrinsic = json.loads(open(camera_intrinsic_path).read())
         camera_intrinsic = camera_intrinsic['camera_settings'][0]['intrinsic_settings']
         
-        print(video_dir, full_idx)
+        print(video_dir, imgid_list)
         
         rgbs = []
         depths = []
@@ -131,8 +129,8 @@ class TrackingDataset(Dataset):
         obj_poses = []
         if self.features > 0:
             feats = []
-        for idx in full_idx:
-            path = self.img_paths[video_dir][idx]
+        for id in imgid_list:
+            path = video_dir + "/" + id[:-1]
         
             rgb_path = path + ".png"
             depth_path = path + ".exr"
@@ -196,4 +194,4 @@ class TrackingDataset(Dataset):
         
         return sample
     def __len__(self):
-        return len(self.all_videos)
+        return len(self.video_dirs)

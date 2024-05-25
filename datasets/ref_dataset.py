@@ -65,7 +65,7 @@ class ReferenceDataset(Dataset):
                     feat_path = path + "_feats_%.2d.npy" % self.features
                     feat = np.load(feat_path)
                 else:
-                    feat_path = path + "_feats_catgeo_19.npy"
+                    feat_path = path + "_feats_catgeo_23.npy"
                     feat = np.load(feat_path)
                     if self.use_geo_type =='only':
                         feat = feat[:1024,...]

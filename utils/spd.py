@@ -60,6 +60,43 @@ def load_obj(path_to_file):
     faces = np.asarray(faces)
     return vertices, faces
 
+def load_ply(path_to_file):
+    """ Load ply file.
+
+    Args:
+        path_to_file: path
+
+    Returns:
+        vertices: ndarray
+        faces: ndarray, index of triangle vertices
+
+    """
+    vertices = []
+    faces = []
+    with open(path_to_file, 'r') as f:
+        lines = f.readlines()
+        vertex_section = False
+        face_section = False
+        for line in lines:
+            if line.startswith("element vertex"):
+                num_vertices = int(line.split()[2])
+                vertex_section = True
+            elif line.startswith("element face"):
+                num_faces = int(line.split()[2])
+                face_section = True
+            elif line.startswith("end_header"):
+                vertex_section = False
+                face_section = False
+            elif vertex_section:
+                vertex = [float(x) for x in line.split()]
+                vertices.append(vertex)
+            elif face_section:
+                face = [int(x) for x in line.split()[1:]]
+                faces.append(face)
+    vertices = np.asarray(vertices)
+    faces = np.asarray(faces)
+    return vertices, faces
+
 
 def create_sphere():
     # 642 verts, 1280 faces,
@@ -154,7 +191,10 @@ def sample_points_from_mesh(path, n_pts, with_normal=False, fps=False, ratio=2):
         points: n_pts x 3, n_pts x 6 if with_normal = True
 
     """
-    vertices, faces = load_obj(path)
+    if path.endswith("obj"):
+        vertices, faces = load_obj(path)
+    elif path.endswith("ply"):
+        vertices, faces = load_ply(path)
     if fps:
         points = uniform_sample(vertices, faces, ratio*n_pts, with_normal)
         pts_idx = farthest_point_sampling(points[:, :3], n_pts)
