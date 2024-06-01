@@ -199,7 +199,7 @@ uni3d_use_color=False
                     uni3d_path = path + f"feats_uni3d{uni3d_layer}_colored.npy"
                 else:
                     uni3d_path = path + f"feats_uni3d{uni3d_layer}_nocolor.npy"
-                np.save(uni3d_path, geo_feat_image.cpu().numpy())
+                # np.save(uni3d_path, geo_feat_image.cpu().numpy())
 
 
 
@@ -214,7 +214,7 @@ uni3d_use_color=False
 
 
 
-                dino_path = path + f"feats_dino{uni3d_layer}.npy"
+                dino_path = path + f"feats_dino{layer}.npy"
                 np.save(dino_path,tokens[0].cpu().numpy())
 
 
@@ -259,11 +259,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dino_layer', default=19,type=int)
 parser.add_argument('--uni3d_layer', default=19,type=int)
 cfg = parser.parse_args()
-gripper_list = ['panda']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
+gripper_list = ['panda','kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
 dino_layer = cfg.dino_layer
 uni3d_layer = cfg.uni3d_layer
 for gripper in gripper_list:
-    save_features(f'/home/data/tianshuwu/data/ref_840/{gripper}', dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
+    save_features(f'/home/data/tianshuwu/data/ref_1920/{gripper}', dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
 # for gripper in gripper_list:
 #     save_features(f'/root/autodl-tmp/shiqian/code/render/reference_more/{gripper}', 19, "cuda:0",use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=False)
 # path = '/root/autodl-tmp/shiqian/datasets/final_20240419/panda'

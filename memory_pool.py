@@ -1474,6 +1474,7 @@ def chamfer_distance(depth_point,pred_point):
 def main_sim(cfg):
 
 
+
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
     ref_dir = f"{cfg.ref_dir}/{cfg.gripper}"
 
@@ -1563,12 +1564,20 @@ def main_sim(cfg):
 
     if cfg.test_data_type == 'real':
         sim_dataset = TrackingDataset(dataset_location=cfg.test_dir)
+        cfg.result_fold_name = cfg.result_fold_name + 'real'
         assert cfg.gripper == 'panda'
     elif cfg.test_data_type == 'sim':
         sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
 
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
     sim_loader = iter(sim_dataloader)
+
+
+    if cfg.max_iter >len(sim_dataset):
+        cfg.max_iter = len(sim_dataset)
+
+    if cfg.pca_type != 'nope':
+        cfg.result_fold_name = cfg.result_fold_name + 'pca'
 
     time_statistics_dict = {
         'move data to gpu time':[],
@@ -1599,6 +1608,8 @@ def main_sim(cfg):
         single_frame_rts = []
         # if global_step < 16:
         #     continue
+        if os.path.exists(f'results/{cfg.result_fold_name}/{cfg.gripper}_{global_step}.txt'):
+            continue
         for i in range(len(sim['rgb'][0])):
             print("Frame %d" % i)
             sim_frame = {
@@ -1703,14 +1714,14 @@ def main_sim(cfg):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+
+    # 不用动的参数
     parser.add_argument('--B', type=int, default=1, help='batch size')
     parser.add_argument('--S', type=int, default=1, help='sequence length')
     parser.add_argument('--shuffle',default=False, action='store_true')
-
     parser.add_argument('--test_dir', type=str, default='/home/data/tianshuwu/data/Ty_data')
     parser.add_argument('--dtype',default=torch.float32)
     parser.add_argument('--record_vis',default=False,action='store_true')
-
     parser.add_argument('--use_full_depth',default=False, action='store_true')  # 这个c++没写,一直关掉
     parser.add_argument('--noise',default='none', action='store_true')   # none random incremental
     parser.add_argument('--adjust',default=False, action='store_true')      # 低精度模式下需要打开，但是有问题
@@ -1721,24 +1732,26 @@ if __name__ == '__main__':
     parser.add_argument('--device',type=str,default='cuda:0')
     parser.add_argument('--uni3d_color',default=False,action='store_true')  # 没效果，不用了
 
-
-    parser.add_argument('--use_depth',default=True, action='store_true')
-    parser.add_argument('--ref_dir', type=str, default='/home/data/tianshuwu/data/ref_480')
+    # 可能会动的参数
+    parser.add_argument('--use_depth',default=False, action='store_true')
+    parser.add_argument('--ref_dir', type=str, default='/home/data/tianshuwu/data/ref_840')
     parser.add_argument('--max_iter',type=int, default=30)
-    parser.add_argument('--refine_mode',type=str,default='a')
-    parser.add_argument('--max_number',type=int, default=0)
-    parser.add_argument('--key_number',type=int,default=1)
-    parser.add_argument('--view_number',type=int,default=10)
-    parser.add_argument('--gripper', type=str, default="kinova")
-    parser.add_argument('--init',default='pnp')        # rela 或者 pnp，多帧优化时rela，单帧优化时pnp，同时要把refine mode改为a
+    parser.add_argument('--refine_mode',type=str,default='d')
+    parser.add_argument('--max_number',type=int, default=32)
+    parser.add_argument('--key_number',type=int,default=8)
+    parser.add_argument('--view_number',type=int,default=5)
+    parser.add_argument('--gripper', type=str, default="panda")
+    parser.add_argument('--init',default='rela')        # rela 或者 pnp，多帧优化时rela，单帧优化时pnp，同时要把refine mode改为a
     parser.add_argument('--result_fold_name',default='tmp')
+    parser.add_argument('--test_data_type', default='sim', help='sim or real')
 
     # 只用dino时，要用together
+    # 目前阶段，不动就可以
     parser.add_argument('--pca_type', default='together', help='together or respective or nope')
     parser.add_argument('--dino_layer', type=int, default=19)
     parser.add_argument('--uni3d_layer',type=int,default=-1)
-    parser.add_argument('--test_data_type',default='sim', help='sim or real')
+
 
     cfg = parser.parse_args()
-    # main_ty(cfg)
+
     main_sim(cfg)

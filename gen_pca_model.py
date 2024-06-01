@@ -61,7 +61,7 @@ class ReferenceDataset(Dataset):
         self.transform = transforms.Compose([
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)), # imagenet defaults
         ])
-        self.device = 'cuda:0'
+        self.device = 'cuda:1'
         if cfg.pca_type == 'torch':
             self.pca = PCALowrank()
         elif cfg.pca_type == 'sklearn':
@@ -236,26 +236,26 @@ class ReferenceDataset(Dataset):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gripper_name',default='panda',  help='single gripper_name')
+    parser.add_argument('--gripper_name',default='robotiq2f85',  help='single gripper_name')
     parser.add_argument('--pca_type',default='torch',help='sklearn or torch')
     parser.add_argument('--dino_layer',default=19,type=int)
     parser.add_argument('--uni3d_layer', default=-1, type=int)
-    parser.add_argument('--ref_dir',default=f"/home/data/tianshuwu/data/ref_840")
+    parser.add_argument('--ref_dir',default=f"/home/data/tianshuwu/data/ref_1920")
     cfg = parser.parse_args()
-    # gripper_name = ['robotiq2f140','robotiq2f85','robotiq3f','shadowhand','kinova','panda',]
+    gripper_name = ['panda']#['robotiq2f140','robotiq2f85','robotiq3f','shadowhand','kinova','panda']
+    # gripper = cfg.gripper_name
 
-    gripper = cfg.gripper_name
+    for gripper in gripper_name:
+        dino_name = f'dino{cfg.dino_layer}' if cfg.dino_layer>0 else None
+        uni3d_name = f'uni3d{cfg.uni3d_layer}_nocolor' if cfg.uni3d_layer>0 else None
+        ref_dir = f'{cfg.ref_dir}/{gripper}'
+        # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
+        # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
+        ref_dataset = ReferenceDataset(dataset_location=ref_dir, dino_name=dino_name,uni3d_name=uni3d_name)
 
-    dino_name = f'dino{cfg.dino_layer}' if cfg.dino_layer>0 else None
-    uni3d_name = f'uni3d{cfg.uni3d_layer}_nocolor' if cfg.uni3d_layer>0 else None
-    ref_dir = f'{cfg.ref_dir}/{cfg.gripper_name}'
-    # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
-    # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, dino_name=dino_name,uni3d_name=uni3d_name)
+        # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
+        ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
 
-    # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
-    ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
-
-    # iterloader = iter(test_dataloader)
-    # Load ref images and init Dinov2 Matcher
-    refs = next(iter(ref_dataloader))
+        # iterloader = iter(test_dataloader)
+        # Load ref images and init Dinov2 Matcher
+        refs = next(iter(ref_dataloader))

@@ -6,9 +6,10 @@ from utils.spd import read_pointcloud,transform_pointcloud
 from utils.quaternion_utils import *
 import torch
 from utils.metrics import compute_auc_all
+import matplotlib.pyplot as plt
 
-fold_name = 'dinouni3d一起pca'
-gripper_name_list = ['kinova']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
+fold_name = 'final/key16pca'
+gripper_name_list = ['panda']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
 result_dict = {
     'add_10cm':[],
     'adds_10cm':[],
@@ -18,9 +19,14 @@ result_dict = {
 for gripper_name in gripper_name_list:
     results_total = []
     # 优化时
-    for i in range(1,6):
+    for i in range(1,21):#[1,2,5,9]:#:
         results = np.loadtxt(f'results/{fold_name}/{gripper_name}_{i}.txt')   # 不是pnp only 时
         results_total.append(results)
+
+    # todo 只是暂时用到，之后删掉
+    # for i in range(21,31):
+    #     results = np.loadtxt(f'results/final/newdatakey16pca/{gripper_name}_{i}.txt')   # 不是pnp only 时
+    #     results_total.append(results)
 
     results_total = np.concatenate(results_total,axis=0)
     q_preds = results_total[:,:4]     # 1024,4
@@ -28,13 +34,14 @@ for gripper_name in gripper_name_list:
     gt_poses = results_total[:,7:23].reshape(-1,4,4)    # 1024,4,4
 
     # pnp only 的
-    # results = np.loadtxt(f'results/{fold_name}/{gripper_name}_pnponly.txt')
+    # results = np.loadtxt(f'results/{fold_name}/{gripper_name}_pnponly_full.txt')
     # pred_poses = results[:,:16].reshape(-1,4,4)
     # gt_poses = np.linalg.inv(results[:,16:].reshape(-1,4,4))
     # q_preds = matrix_to_quaternion(torch.tensor(pred_poses[:,:3,:3])).numpy()
     # t_preds = np.clip(np.nan_to_num(pred_poses[:,:3,3],nan=100),-100,100)
 
-    gripper_pointcloud = read_pointcloud(f"/home/data/tianshuwu/data/final_20240419/{gripper_name}/model/sampled_4096.txt")   # 8192,3
+    gripper_pointcloud = read_pointcloud(f"/home/data/tianshuwu/data/final_20240419/{gripper_name}/model/sampled_2048.txt")   # 8192,3
+    # gripper_pointcloud = read_pointcloud("/home/data/tianshuwu/code/gripper/results/tmp/sampled_2048.txt")
 
     x = np.linspace(0,0.1,1000)
     y = np.zeros(1000)
@@ -45,6 +52,14 @@ for gripper_name in gripper_name_list:
 
         mask = x>np.array(dis)
         y[mask] += 1/len(q_preds)
+
+    # plt.plot(x*100, y, label=f'{gripper_name}')
+    # plt.xlabel('Centimeter')
+    # plt.ylabel('acc')
+    # plt.title(f'{gripper_name}')
+    # plt.legend()
+    # # 保存图片
+    # plt.savefig(f'results/{fold_name}/realsence{gripper_name}.png')
 
     area = np.trapz(y, x) / 0.1
     print(area)
@@ -100,6 +115,7 @@ print(round(np.array(result_dict['add_1cm']).mean(),4),round(np.array(result_dic
     # t_errors = np.array(t_errors)
     #
     # thresholds = [
+    #     (180,1),
     #     (5, 2),
     #     (5, 5),
     #     (10, 2),
