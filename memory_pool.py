@@ -233,19 +233,30 @@ class MemoryPool():
         # else:
         if len(self.matches_3ds) > self.max_number:
             self.eliminate_one_frame()
+        if len(self.matches_3d_multi_view) > self.max_number:
+            self.eliminate_one_frame()
 
 
 
     def eliminate_one_frame(self,eliminate_id=None):
+        # if eliminate_id == None:
+        #     # 用pred_pose选择要删除的帧
+        #     dist_mat = compute_R_errors_batch(np.array(self.relative_poses),np.array(self.relative_poses))
+        #     # dist_mat = np.zeros((len(self.pred_poses), len(self.pred_poses)))
+        #     # for i, pose1 in enumerate(self.pred_poses):  # TODO batch形式
+        #     #     for j, pose2 in enumerate(self.pred_poses):
+        #     #         dist_mat[i, j], _ = compute_RT_errors(pose1, pose2)
+        #     distsum = np.sum(dist_mat,axis=1,keepdims=False)
+        #     eliminate_id = np.argsort(distsum)[0]   # 删掉的是提供额外信息最少的帧
+
         if eliminate_id == None:
             # 用pred_pose选择要删除的帧
             dist_mat = compute_R_errors_batch(np.array(self.relative_poses),np.array(self.relative_poses))
-            # dist_mat = np.zeros((len(self.pred_poses), len(self.pred_poses)))
-            # for i, pose1 in enumerate(self.pred_poses):  # TODO batch形式
-            #     for j, pose2 in enumerate(self.pred_poses):
-            #         dist_mat[i, j], _ = compute_RT_errors(pose1, pose2)
-            distsum = np.sum(dist_mat,axis=1,keepdims=False)
-            eliminate_id = np.argsort(distsum)[0]   # 删掉的是提供额外信息最少的帧
+            dist_mat = dist_mat + np.eye(dist_mat.shape[0])*180
+
+            min_index = np.unravel_index(np.argmin(dist_mat), dist_mat.shape)
+
+            eliminate_id = min_index[0]   # 删掉的是提供额外信息最少的帧
 
         if self.cfg.refine_mode =='d':
             self.matches_3d_multi_view.pop(eliminate_id)
