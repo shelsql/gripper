@@ -6,35 +6,10 @@ from utils.spd import read_pointcloud,transform_pointcloud
 from utils.quaternion_utils import *
 import torch
 from utils.metrics import compute_auc_all
+import matplotlib.pyplot as plt
 
-import glob
-
-ycb_obj_name_list = [
-    "",
-    "002_master_chef_can",
-    "003_cracker_box",
-    "004_sugar_box",
-    "005_tomato_soup_can",
-    "006_mustard_bottle",
-    "007_tuna_fish_can",
-    "008_pudding_box",
-    "009_gelatin_box",
-    "010_potted_meat_can",
-    "011_banana",
-    "019_pitcher_base",
-    "021_bleach_cleanser",
-    "024_bowl",
-    "025_mug",
-    "035_power_drill",
-    "036_wood_block",
-    "037_scissors",
-    "040_large_marker",
-    "051_large_clamp",
-    "052_extra_large_clamp",
-    "061_foam_brick"
-]
-fold_name = 'bop_ycbv_both'
-gripper_name_list = ['01']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
+fold_name = 'final/key16pca'
+gripper_name_list = ['panda']#['robotiq2f140','robotiq2f85']###['panda','kinova','shadowhand','robotiq3f']
 result_dict = {
     'add_10cm':[],
     'adds_10cm':[],
@@ -47,9 +22,14 @@ for obj_id in obj_ids:
     print("Calculating results for obj_id %d, %s" % (obj_id, ycb_obj_name_list[obj_id]))
     results_total = []
     # 优化时
-    for result_fp in glob.glob('results/%s/obj_%.6d_*.txt' % (fold_name, obj_id)):
-        results = np.loadtxt(result_fp)   # 不是pnp only 时
+    for i in range(1,21):#[1,2,5,9]:#:
+        results = np.loadtxt(f'results/{fold_name}/{gripper_name}_{i}.txt')   # 不是pnp only 时
         results_total.append(results)
+
+    # todo 只是暂时用到，之后删掉
+    # for i in range(21,31):
+    #     results = np.loadtxt(f'results/final/newdatakey16pca/{gripper_name}_{i}.txt')   # 不是pnp only 时
+    #     results_total.append(results)
 
     results_total = np.concatenate(results_total,axis=0)
     q_preds = results_total[:,:4]     # 1024,4
@@ -57,17 +37,14 @@ for obj_id in obj_ids:
     gt_poses = results_total[:,7:23].reshape(-1,4,4)    # 1024,4,4
 
     # pnp only 的
-    # results = np.loadtxt(f'results/{fold_name}/{gripper_name}_pnponly.txt')
+    # results = np.loadtxt(f'results/{fold_name}/{gripper_name}_pnponly_full.txt')
     # pred_poses = results[:,:16].reshape(-1,4,4)
     # gt_poses = np.linalg.inv(results[:,16:].reshape(-1,4,4))
     # q_preds = matrix_to_quaternion(torch.tensor(pred_poses[:,:3,:3])).numpy()
     # t_preds = np.clip(np.nan_to_num(pred_poses[:,:3,3],nan=100),-100,100)
 
-    #model_pc = read_pointcloud(f"/home/data/tianshuwu/data/final_20240419/{gripper_name}/model/sampled_4096.txt")   # 8192,3
-    model_pc = read_pointcloud("/root/autodl-tmp/shiqian/code/render/YCB-Video/models/%s/sampled_2048.txt" % ycb_obj_name_list[obj_id])
-    center = np.array([(model_pc[:,0].max() + model_pc[:,0].min())/2, (model_pc[:,1].max() + model_pc[:,1].min())/2, (model_pc[:,2].max() + model_pc[:,2].min())/2])
-    model_pc -= center
-
+    gripper_pointcloud = read_pointcloud(f"/home/data/tianshuwu/data/final_20240419/{gripper_name}/model/sampled_2048.txt")   # 8192,3
+    # gripper_pointcloud = read_pointcloud("/home/data/tianshuwu/code/gripper/results/tmp/sampled_2048.txt")
 
     x = np.linspace(0,0.1,1000)
     y = np.zeros(1000)
@@ -78,6 +55,14 @@ for obj_id in obj_ids:
 
         mask = x>np.array(dis)
         y[mask] += 1/len(q_preds)
+
+    # plt.plot(x*100, y, label=f'{gripper_name}')
+    # plt.xlabel('Centimeter')
+    # plt.ylabel('acc')
+    # plt.title(f'{gripper_name}')
+    # plt.legend()
+    # # 保存图片
+    # plt.savefig(f'results/{fold_name}/realsence{gripper_name}.png')
 
     area = np.trapz(y, x) / 0.1
     print(area)
@@ -133,6 +118,7 @@ print(round(np.array(result_dict['add_1cm']).mean(),4),round(np.array(result_dic
     # t_errors = np.array(t_errors)
     #
     # thresholds = [
+    #     (180,1),
     #     (5, 2),
     #     (5, 5),
     #     (10, 2),
