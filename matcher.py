@@ -254,7 +254,7 @@ class Dinov2Matcher:
         if self.uni3d_layer > 0:
             # step1 先从深度图还原点云，获得512个feature及该group中心坐标
             # 点云要先中心化，但是投影回去的时候不要忘了再把中心位置加回去，不然patch找自己的geo feature时会找歪         重要！！
-
+            print(depths[0][0].shape, masks[0][0].shape, intrinsics)
             point_cloud = depth_map_to_pointcloud_tensor(depths[0][0], masks[0][0], intrinsic_matrix)  # 从5ms优化到了0.5ms
 
             point_center = point_cloud.mean(0)
@@ -264,6 +264,13 @@ class Dinov2Matcher:
             else:
                 rgb = torch.ones_like(point_cloud)
 
+            #print(point_cloud.shape, rgb.shape)
+            while point_cloud.shape[0] < 64:
+                if point_cloud.shape[0] == 0:
+                    point_cloud = torch.zeros((1, 3), device=self.device)
+                    rgb = torch.ones_like(point_cloud)
+                point_cloud = torch.cat([point_cloud, point_cloud], dim = 0)
+                rgb = torch.cat([rgb, rgb], dim = 0)
             geo_feat, geo_center = self.uni3d.encode_pc(torch.cat([point_cloud.unsqueeze(0), rgb.unsqueeze(0)], dim=-1),
                                                         layer=self.uni3d_layer)
 
@@ -882,7 +889,7 @@ class Dinov2Matcher:
                 x_2 += size[0]
                 #print(x_1, y_1, x_2, y_2)
                 full_img = cv2.line(full_img, (x_1,y_1), (x_2,y_2), (0,0,255), 1)
-            cv2.imwrite("./match_vis/match3d_%.2d_%.3d.png" % (step, i), full_img)
+            cv2.imwrite("./match_vis/match3d_%.2d_%.3d.png" % (step, i), full_img[:,:,::-1])
             
     def vis_features(self, images, feat_masks, feats):
         B, C, H, W = images.shape

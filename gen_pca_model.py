@@ -248,14 +248,16 @@ if __name__ == '__main__':
 
     dino_name = f'dino{cfg.dino_layer}' if cfg.dino_layer>0 else None
     uni3d_name = f'uni3d{cfg.uni3d_layer}_nocolor' if cfg.uni3d_layer>0 else None
-    ref_dir = f'{cfg.ref_dir}/{cfg.gripper_name}'
-    # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
-    # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, dino_name=dino_name,uni3d_name=uni3d_name)
+    # ref_dir = f'{cfg.ref_dir}/{cfg.gripper_name}'
+    for obj_id in range(1,22):
+        ref_dir = "/root/autodl-tmp/shiqian/code/render/ycb_42x20/obj_%.6d" % obj_id
+        # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
+        # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
+        ref_dataset = ReferenceDataset(dataset_location=ref_dir, dino_name=dino_name,uni3d_name=uni3d_name)
 
-    # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
-    ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
+        # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
+        ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=False)
 
-    # iterloader = iter(test_dataloader)
-    # Load ref images and init Dinov2 Matcher
-    refs = next(iter(ref_dataloader))
+        # iterloader = iter(test_dataloader)
+        # Load ref images and init Dinov2 Matcher
+        refs = next(iter(ref_dataloader))

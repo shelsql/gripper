@@ -1,5 +1,5 @@
-
 import torch
+
 torch.autograd.set_detect_anomaly(True)
 
 from utils.quaternion_utils import *
@@ -13,7 +13,7 @@ import os
 from matcher import Dinov2Matcher
 import time
 from utils.spd import read_pointcloud,depth_map_to_pointcloud,pairwise_distances_torch,compute_R_errors_batch
-from utils.spd import save_pointcloud
+from utils.spd import transform_pointcloud, save_pointcloud
 import pickle
 import random
 from utils.geometric_vision import solve_pnp_ransac
@@ -23,11 +23,39 @@ import sys
 from sklearn.cluster import DBSCAN
 import joblib
 from sklearn.decomposition import PCA
-sys.path.append('/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build')
+sys.path.append('/home/data/tianshuwu/code/gripper/try_pybind11/build')
+sys.path.append('/root/autodl-tmp/shiqian/code/gripper/try_pybind11/build')
+from gen_pca_model import PCALowrank
 import try_pybind11
 random.seed(123)
 np.random.seed(123)
 torch.manual_seed(123)
+
+ycb_obj_name_list = [
+    "",
+    "002_master_chef_can",
+    "003_cracker_box",
+    "004_sugar_box",
+    "005_tomato_soup_can",
+    "006_mustard_bottle",
+    "007_tuna_fish_can",
+    "008_pudding_box",
+    "009_gelatin_box",
+    "010_potted_meat_can",
+    "011_banana",
+    "019_pitcher_base",
+    "021_bleach_cleanser",
+    "024_bowl",
+    "025_mug",
+    "035_power_drill",
+    "036_wood_block",
+    "037_scissors",
+    "040_large_marker",
+    "051_large_clamp",
+    "052_extra_large_clamp",
+    "061_foam_brick"
+]
+
 class MemoryPool():
     def __init__(self,cfg):
         self.cfg = cfg
@@ -65,8 +93,10 @@ class MemoryPool():
         self.max_number = cfg.max_number
         self.key_number = cfg.key_number
 
-        gripper_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/model.obj" % cfg.gripper
-        pointcloud_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/sampled_4096.txt" % cfg.gripper
+        #gripper_path = "/home/data/tianshuwu/data/final_20240419/%s/model/model.obj" % cfg.gripper
+        #pointcloud_path = "/home/data/tianshuwu/data/final_20240419/%s/model/sampled_4096.txt" % cfg.gripper
+        gripper_path = "/root/autodl-tmp/shiqian/code/render/YCB-Video/models/%s/textured_simple.obj" % ycb_obj_name_list[cfg.obj_id]
+        pointcloud_path = "/root/autodl-tmp/shiqian/code/render/YCB-Video/models/%s/sampled_2048.txt" % ycb_obj_name_list[cfg.obj_id]
         if not os.path.exists(pointcloud_path):
             self.gripper_point = sample_points_from_mesh(gripper_path, fps=True, n_pts=4096)
         else:
@@ -74,12 +104,12 @@ class MemoryPool():
         self.gripper_point_small = torch.tensor(self.gripper_point[farthest_point_sampling(self.gripper_point,128)],device=self.cfg.device,dtype=torch.float32)
         self.noise = None
 
-    def refine_new_frame(self,frame,record_vis,global_step,vis_dict=None):
+    def refine_new_frame(self,frame,record_vis,global_step,vis_dict=None,time_statistics_dict=None):
         # frame: matches_3d,gt_pose,rt_matrix,camera_Ks
-
+        time_prepare_start  = time.time()
         self.test_camera_Ks.insert(0,frame['test_camera_K'])# np array
         self.gt_poses.insert(0,frame['gt_pose'])            # np array
-        self.paths.insert(0,frame['image_path'])
+        # self.paths.insert(0,frame['image_path'])
 
         if self.cfg.refine_mode == 'd':
             self.matches_3d_multi_view.insert(0,frame['matches_3d_multi_view'])      # tensor(98,6) different shape
@@ -164,8 +194,10 @@ class MemoryPool():
         # q_pred, t_pred = self.c_optimize(views_idx_for_opt)
         # q_pred = torch.tensor(q_pred)
         # t_pred = torch.tensor(t_pred)
+        time_prepare_end = time.time()
+        time_statistics_dict['prepare time'].append(time_prepare_end-time_prepare_start)
         if self.cfg.single_opt:
-            q_pred, t_pred = self.optimize(np.array([0]), qt_pred_for_vis_seq=qt_pred_for_vis_seq)
+            q_pred, t_pred = self.optimize(np.array([0]), qt_pred_for_vis_seq=qt_pred_for_vis_seq,time_statistics_dict=time_statistics_dict)
             r_pred = quaternion_to_matrix(q_pred)
             rt_pred = np.zeros((4, 4))
             rt_pred[:3, :3] = r_pred.cpu().detach().numpy()
@@ -174,9 +206,9 @@ class MemoryPool():
             self.pred_poses[0] = rt_pred
         else:
             if self.cfg.refine_mode == 'd' or self.cfg.refine_mode == 'e':
-                q_pred, t_pred = self.optimize(views_idx_for_opt,select_ref_view,False,qt_pred_for_vis_seq)   # 0.05s
+                q_pred, t_pred = self.optimize(views_idx_for_opt,select_ref_view,False,qt_pred_for_vis_seq,time_statistics_dict=time_statistics_dict)   # 0.05s
             else:
-                q_pred, t_pred = self.optimize(views_idx_for_opt, rubbish_flag=False, qt_pred_for_vis_seq=qt_pred_for_vis_seq)
+                q_pred, t_pred = self.optimize(views_idx_for_opt, rubbish_flag=False, qt_pred_for_vis_seq=qt_pred_for_vis_seq,time_statistics_dict=time_statistics_dict)
 
         r_pred = quaternion_to_matrix(q_pred)
         rt_pred = np.zeros((4, 4))
@@ -220,16 +252,18 @@ class MemoryPool():
         # 如果内存池已满，则删除其中一帧
         # if frame['rubbish_flag']:
         #     self.eliminate_one_frame(0)
-        if self.cfg.refine_mode == 'd' or self.cfg.refine_mode == 'e':
-            dist_mat = compute_R_errors_batch(np.array(self.relative_poses),np.array(self.relative_poses))
-            if len(self.matches_3d_multi_view)>1:
-                if np.min(dist_mat[0][1:]) < 5 :
-                    self.eliminate_one_frame(0)
-            if len(self.matches_3d_multi_view) > self.max_number:
-                self.eliminate_one_frame()
-        else:
-            if len(self.matches_3ds) > self.max_number:
-                self.eliminate_one_frame()
+
+        # TODO 看看是不是这里的问题？
+        # if self.cfg.refine_mode == 'd' or self.cfg.refine_mode == 'e':
+        #     dist_mat = compute_R_errors_batch(np.array(self.relative_poses),np.array(self.relative_poses))
+        #     if len(self.matches_3d_multi_view)>1:
+        #         if np.min(dist_mat[0][1:]) < 5 :
+        #             self.eliminate_one_frame(0)
+        #     if len(self.matches_3d_multi_view) > self.max_number:
+        #         self.eliminate_one_frame()
+        # else:
+        if len(self.matches_3ds) > self.max_number:
+            self.eliminate_one_frame()
 
 
 
@@ -256,7 +290,7 @@ class MemoryPool():
             self.matches_3ds.pop(eliminate_id)
 
         self.test_camera_Ks.pop(eliminate_id)
-        self.paths.pop(eliminate_id)
+        # self.paths.pop(eliminate_id)
         if self.cfg.use_depth:
             # self.keypoint_from_depths.pop(eliminate_id)
             self.depths.pop(eliminate_id)
@@ -301,11 +335,12 @@ class MemoryPool():
 
         np.savetxt(f'results/{self.cfg.result_fold_name}/{result_name}.txt', results)
 
-    def optimize(self,views_idx_for_opt,select_ref_view=None,rubbish_flag=False,qt_pred_for_vis_seq=None):
+    def optimize(self,views_idx_for_opt,select_ref_view=None,rubbish_flag=False,qt_pred_for_vis_seq=None,time_statistics_dict=None):
         '''删除垃圾点的迭代方法，优化的是输入list的第一帧，后面的帧仅辅助'''
         # matches_3ds: list[tensor(342,6),...] different shape
         # other: list[np.array(4,4)or(3,3)], same shape
-        time0 = time.time()
+
+        another_prepare_time = time.time()
         if self.cfg.refine_mode == 'd' or self.cfg.refine_mode == 'e':
             matches_3ds = []
             for i in views_idx_for_opt:
@@ -319,7 +354,7 @@ class MemoryPool():
         #
         #     if self.cfg.use_full_depth:
         #         fullpoint_from_depths = [torch.tensor(self.fullpoint_from_depths[i],dtype=self.cfg.dtype,device=self.cfg.device) for i in views_idx_for_opt]      # list[tensor(2728,3)]
-        if self.cfg.use_depth:
+        if self.cfg.use_depth:      # 计算深度还原出来的点
             keypoint_from_depths = []
             for i,view in enumerate(views_idx_for_opt):
                 keypoint_from_depth = torch.zeros_like(matches_3ds[i][:,3:6])
@@ -355,7 +390,7 @@ class MemoryPool():
         # 这段不要删，用来看优化前的效果
         # self.q_before_opt.append(q_pred.cpu().numpy())
         # self.t_before_opt.append(t_pred.cpu().numpy())
-        time1 = time.time()
+
 
         if self.cfg.rela_mode == "gt":        # 高精度时，使用相对于数据集第一帧的pose 计算相对pose 来优化
             relative_poses_tmp = torch.stack([torch.tensor(self.relative_poses[i],dtype=self.cfg.dtype,device=self.cfg.device) for i in views_idx_for_opt])                # b,4,4
@@ -369,13 +404,15 @@ class MemoryPool():
             t_relatives = relative_poses_tmp[:, :3, 3]                  # b,3
             q_rela = q_relatives[0]
             t_rela = t_relatives[0]
-        time2 = time.time()     # 20ms~30ms
+
         # step1: refine with keypoints
         # 也是先剔去离群点再优化，这样在c++中也方便实现
         # 以及在外部就把点云旋转好，进去的话只用左乘pred
         matches_3ds_within_3sigma = []
         keypoint_from_depths_within_3sigma = []
         gripper_rela = []   # 进去只用左乘pred
+
+
         for i in range(len(matches_3ds)):
             q_rela_tmp = quaternion_multiply(q_rela, quaternion_invert(q_relatives[i]))
             t_rela_tmp = quaternion_apply(q_rela_tmp, -t_relatives[i]) + t_rela
@@ -410,14 +447,21 @@ class MemoryPool():
             std = reproj_dis.std()
             within_3sigma_2d = (reproj_dis >= mean-1*std) & (reproj_dis <= mean+1*std)
             within_3sigma = (within_3sigma_2d & within_3sigma_3d) if self.cfg.use_depth else within_3sigma_2d
-            matches_3ds_within_3sigma.append(matches_3ds[i][within_3sigma])
+            if self.cfg.refine_mode == 'a':
+                matches_3ds_within_3sigma.append(matches_3ds[i][within_3sigma])
+            else:
+                matches_3ds_within_3sigma.append(matches_3ds[i])
             # q_rela_tmp = quaternion_multiply(q_rela, quaternion_invert(q_relatives[i]))
             # t_rela_tmp = quaternion_apply(q_rela_tmp, -t_relatives[i]) + t_rela
             matches_3ds_within_3sigma[i][:, 3:] = quaternion_apply(q_rela_tmp,
                                                                    matches_3ds_within_3sigma[i][:, 3:]) + t_rela_tmp
             if self.cfg.use_depth:
-                keypoint_from_depths_within_3sigma.append(keypoint_from_depths[i][within_3sigma])
-        time3 = time.time()     # 15 ms
+                if self.cfg.refine_mode == 'a':
+                    keypoint_from_depths_within_3sigma.append(keypoint_from_depths[i][within_3sigma])
+                else:
+                    keypoint_from_depths_within_3sigma.append(keypoint_from_depths[i])
+        another_prepare_time_end = time.time()
+        time_statistics_dict['prepare time'][-1] = time_statistics_dict['prepare time'][-1] + another_prepare_time_end - another_prepare_time
         if self.cfg.use_cpp:
             camera_Ks = torch.zeros((len(matches_3ds), 4),device=self.cfg.device)
             camera_Ks[:, [0, 1, 2, 3]] = test_camera_Ks[:, [0, 0, 1, 1], [0, 2, 1, 2]]
@@ -427,7 +471,6 @@ class MemoryPool():
             #     q_rela_tmp = quaternion_multiply(q_rela,quaternion_invert(q_relatives[i]))
             #     t_rela_tmp = quaternion_apply(q_rela_tmp,-t_relatives[i]) + t_rela
             #     matches_3ds_within_3sigma[i][:,3:] = quaternion_apply(q_rela_tmp,matches_3ds_within_3sigma[i][:,3:] ) + t_rela_tmp
-            time4 = time.time()
             # if rubbish_flag and len(matches_3ds_within_3sigma)>1:   # 这个没啥用，不用了
             #     begin = 1
             # else:
@@ -454,8 +497,7 @@ class MemoryPool():
                 )
                 q_pred = torch.tensor(q_pred,device=self.cfg.device, dtype=self.cfg.dtype)
                 t_pred = torch.tensor(t_pred,device=self.cfg.device,dtype=self.cfg.dtype)
-            time5 = time.time()
-            print(f'time0{time1-time0} time1{time2-time1} time2{time3-time2} time3{time4-time3} time4{time5-time4} ')
+
         else:
             q_pred = q_pred.requires_grad_()
             t_pred = t_pred.requires_grad_()
@@ -592,8 +634,8 @@ class MemoryPool():
                 else:
                     qt_pred_for_vis_seq.append(qt_pred_for_vis_frame)
                 end_time = time.time()
-                print("Time", end_time - start_time)
-                print('num_of_iter', iteration)
+        ceres_time_end = time.time()
+        time_statistics_dict['ceres time'].append(ceres_time_end - another_prepare_time_end)
         return q_pred, t_pred
 
     def vote(self):
@@ -663,7 +705,7 @@ class MemoryPool():
 
     def vote_d_new(self):
         if len(self.pnp_rt) == 1:
-            return [[0]]
+            return [range(self.cfg.view_number)]
         cambase_points_init = transform_pointcloud_torch(self.gripper_point_small,torch.tensor(self.base_pnp_rt,device=self.cfg.device,dtype=torch.float32))    # k,128,3
         min_indices = []
         for i,rt in enumerate(self.pnp_rt):
@@ -696,7 +738,7 @@ class MemoryPool():
             theta_matrix = torch.arccos(torch.clip((trace - 1) / 2, -1, 1)) * 180 / torch.pi    # 5?,1
 
             # 在这里多选几个
-            similar_indice_list = torch.nonzero(theta_matrix.reshape(-1) < 30).squeeze(1).tolist()
+            similar_indice_list = torch.nonzero(theta_matrix.reshape(-1) < 45).squeeze(1).tolist()
             if len(similar_indice_list) == 0:
                 min_indice = torch.argmin(theta_matrix.reshape(-1))
                 select_ref_view.append([min_indice.item()])
@@ -1019,13 +1061,15 @@ class MemoryPool():
         return q_preds, t_preds
 
 
-def run_model(d, matcher,cfg ,vis_dict=None,step=None):
+def run_model(d, matcher,cfg ,vis_dict=None,step=None,time_statistics_dict=None):
     metrics = {}
+    time0 = time.time()
     rgbs = torch.Tensor(d['rgb'])[0].float().permute(0, 3, 1, 2).to(cfg.device)  # B, C, H, W
     depths = torch.Tensor(d['depth'])[0].float().permute(0, 3, 1, 2).to(cfg.device)
     masks = torch.Tensor(d['mask'])[0].float().permute(0, 3, 1, 2).to(cfg.device)
-    c2ws = d['c2w'][0]  # B, 4, 4
-    o2ws = d['obj_pose'][0]  # B, 4, 4
+    #c2ws = d['c2w'][0]  # B, 4, 4
+    #o2ws = d['obj_pose'][0]  # B, 4, 4
+    o2cs = d['o2c'][0]
     intrinsics = d['intrinsics']
 
     test_camera_K = np.zeros((3, 3))
@@ -1034,6 +1078,8 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
     test_camera_K[0, 2] = intrinsics['cx']
     test_camera_K[1, 2] = intrinsics['cy']
     test_camera_K[2, 2] = 1
+    
+    print(test_camera_K)
     # print(test_camera_K)
     # if cfg.use_depth:
     #     point_from_depth = depth_map_to_pointcloud(depths[0][0], masks[0][0], intrinsics)
@@ -1048,14 +1094,17 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
     matches_3ds, rt_matrixs, test_camera_Ks, gt_poses = [], [], [], [] # 需要传出去的
 
     for i in range(S):
-        start_time = time.time()
+
         frame = {
             'rgb': d['rgb'][0, i:i + 1],
             'depth': d['depth'][0, i:i + 1],
             'mask': d['mask'][0, i:i + 1],
-            'feat': d['feat'][0, i:i + 1],
+            'feat': None,#d['feat'][0, i:i + 1],
             'intrinsics': d['intrinsics']
         }
+        time1=time.time()
+        time_statistics_dict['move data to gpu time'].append(time1-time0)
+
         if cfg.refine_mode == 'e':
             ref_centers,matches_3d_list = matcher.gen_ref_centers(frame,step=i,N_select=cfg.view_number,gt_pose=None)
         elif cfg.refine_mode == 'd':
@@ -1063,21 +1112,23 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
             # _, matches_3d_list = matcher.gen_ref_centers(frame, step=i, N_select=30,
             #                                                            gt_pose=None)
             # else:
-            matches_3d_list, _, __ = matcher.match_batch(frame, step=i, N_select=cfg.view_number,
+            matches_3d_list, _, __ = matcher.match_batch(frame, step=step, N_select=cfg.view_number,
                                                                               refine_mode=cfg.refine_mode,
-                                                                              gt_pose=None)
+                                                                              gt_pose=None,time_statistics_dict=time_statistics_dict)
         else:
-            matches_3d_list, _, __ = matcher.match_batch(frame, step=i, N_select=cfg.view_number,
+            matches_3d_list, _, __ = matcher.match_batch(frame, step=step, N_select=cfg.view_number,
                                                                           refine_mode=cfg.refine_mode,
-                                                                          gt_pose=None)  # N, 6i
+                                                                          gt_pose=None,time_statistics_dict=time_statistics_dict)  # N, 6i
         # print(matches_3d[::10])
         # if matches_3d is None:
         #     print("No matches")
         #     rt_matrix = np.eye(4)
         #     continue
 
-        rubbish_flag = False
 
+
+        rubbish_flag = False
+        pnp_start_time = time.time()
         if cfg.refine_mode == 'a':
             matches_3d_multi_view = []
             rt_matrix_multi_view = []
@@ -1089,7 +1140,7 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
                                                                               camera_K=test_camera_K)
                 if inlier is not None:
                     matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
-                    rt_matrix_multi_view.append(rt_matrix)
+                    rt_matrix_multi_view.append(np.nan_to_num(rt_matrix,nan=0))
 
             # 10个views都用（可能有重复），选inlier最多的rt_matrix
             n = 0
@@ -1108,9 +1159,7 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
             else:
                 matches_3ds.append(torch.cat(matches_3d_multi_view, dim=0))
                 rt_matrixs.append(rt_matrix_multi_view[select_id])
-            if n<50:    # 这个没啥用
-                # rubbish_flag = True
-                pass
+
 
         elif cfg.refine_mode == 'b':
             matches_3d = torch.cat(matches_3d_list, dim=0)
@@ -1152,7 +1201,7 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
                     if len(inlier) >= num_inlier:
                         num_inlier = len(inlier)
                     matches_3d_multi_view.append(matches_3d[inlier.reshape(-1)])
-                    rt_matrix_multi_view.append(rt_matrix)
+                    rt_matrix_multi_view.append(np.nan_to_num(rt_matrix,nan=0))
                     # ref_pose_multi_view.append(ref_pose_list[j])
                 else:
                     matches_3d_multi_view.append(matches_3d)
@@ -1174,10 +1223,14 @@ def run_model(d, matcher,cfg ,vis_dict=None,step=None):
                     matches_3d_multi_view.append(matches_3d)
                     rt_matrix_multi_view.append(rt_matrix)
 
+        time_pnp_end = time.time()
+        time_statistics_dict['pnp time'].append(time_pnp_end - pnp_start_time)
         test_camera_Ks.append(test_camera_K)
         # depthss.append(depths)
-        gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
-        gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
+        #gt_cam_to_obj = np.dot(np.linalg.inv(o2ws[i]), c2ws[i])
+        #gt_obj_to_cam = np.linalg.inv(gt_cam_to_obj)
+        gt_cam_to_obj = np.linalg.inv(o2cs[i])
+        gt_obj_to_cam = o2cs[i]
         gt_pose = gt_cam_to_obj
         gt_poses.append(gt_pose)
 
@@ -1454,15 +1507,59 @@ def chamfer_distance(depth_point,pred_point):
 #         compute_results_rt(all_preds, all_gts)
 
 
-def main(cfg):
-    assert cfg.use_geo_type in ['only','nope','both']
+def main_sim(cfg):
+
+
     # The idea of this file is to test DinoV2 matcher and multi frame optimization on Blender rendered data
     ref_dir = "%s/obj_%.6d" % (cfg.ref_dir, cfg.obj_id)
-    # pca = joblib.load(f'{ref_dir}/pca_model.joblib')
-    pca = None
+
+    pca = None  # 一起pca
+
+    dino_pca = None
+    uni3d_pca = None
+
+    setting_name = None
+    dino_name = None
+    uni3d_name = None
+
+
+    setting_name = ''
+    if cfg.dino_layer>0:
+        setting_name = setting_name + f'dino{cfg.dino_layer}'
+    if cfg.uni3d_layer>0:
+        setting_name = setting_name + f'uni3d{cfg.uni3d_layer}_'
+        if cfg.uni3d_color:
+            setting_name = setting_name + 'colored'
+        else:
+            setting_name = setting_name + 'nocolor'
+
+    if cfg.pca_type == 'together':
+        pca = PCALowrank()
+        pca.V = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
+        pca.mean = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # pca.std = torch.tensor(np.load(f"{ref_dir}/{setting_name}_pca_std.npy"),device=cfg.device,dtype=cfg.dtype)
+
+    elif cfg.pca_type == 'respective':
+        dino_name = f'dino{cfg.dino_layer}'
+        uni3d_name = f'uni3d{cfg.uni3d_layer}_'
+        if cfg.uni3d_color:
+            uni3d_name = uni3d_name + 'colored'
+        else:
+            uni3d_name = uni3d_name + 'nocolor'
+
+        dino_pca = PCALowrank()
+        dino_pca.V = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
+        dino_pca.mean = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # dino_pca.std = torch.tensor(np.load(f"{ref_dir}/{dino_name}_pca_std.npy"),device=cfg.device,dtype=cfg.dtype)
+
+        uni3d_pca = PCALowrank()
+        uni3d_pca.V = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_V.npy"),device=cfg.device,dtype=cfg.dtype)
+        uni3d_pca.mean = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_mean.npy"),device=cfg.device,dtype=cfg.dtype)
+        # uni3d_pca.std = torch.tensor(np.load(f"{ref_dir}/{uni3d_name}_pca_std.npy"), device=cfg.device,dtype=cfg.dtype)
+
     # test_dataset = SimTrackDataset(dataset_location=test_dir, seqlen=S, features=feat_layer)
     # test_dataset = TrackingDataset(dataset_location=cfg.test_dir, seqlen=cfg.S,features=cfg.feat_layer)
-    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, features=cfg.feat_layer,pca=pca,use_geo_type=cfg.use_geo_type)
+    ref_dataset = ReferenceDataset(dataset_location=ref_dir, num_views=840, dino_layer=cfg.dino_layer,uni3d_layer=cfg.uni3d_layer,uni3d_color=cfg.uni3d_color,setting_name=setting_name,dino_name=dino_name,uni3d_name=uni3d_name,cfg=cfg)
 
     # test_dataloader = DataLoader(test_dataset, batch_size=cfg.B, shuffle=cfg.shuffle)
     ref_dataloader = DataLoader(ref_dataset, batch_size=1, shuffle=cfg.shuffle)
@@ -1477,26 +1574,56 @@ def main(cfg):
     # ref_images = torch.concat([ref_rgbs[0], ref_depths[0, :, 0:1], ref_masks[0, :, 0:1]], axis=1)
     # print(ref_images.shape)
     global_step = 0
-    #gripper_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/model.obj" % cfg.gripper
-    #pointcloud_path = "/root/autodl-tmp/shiqian/datasets/final_20240419/%s/model/sampled_4096.txt" % cfg.gripper
-    obj_path = "/root/autodl-tmp/shiqian/datasets/BOP/ycbv/models/obj_%.6d.ply" % cfg.obj_id
-    pointcloud_path = "/root/autodl-tmp/shiqian/datasets/BOP/ycbv/models/obj_%.6d_4096.txt" % cfg.obj_id
+    #gripper_path = "/home/data/tianshuwu/data/final_20240419/%s/model/model.obj" % cfg.gripper
+    #pointcloud_path = "/home/data/tianshuwu/data/final_20240419/%s/model/sampled_4096.txt" % cfg.gripper
+    gripper_path = "/root/autodl-tmp/shiqian/code/render/YCB-Video/models/%s/textured_simple.obj" % ycb_obj_name_list[cfg.obj_id]
+    pointcloud_path = "/root/autodl-tmp/shiqian/code/render/YCB-Video/models/%s/sampled_2048.txt" % ycb_obj_name_list[cfg.obj_id]
     if not os.path.exists(pointcloud_path):
-        model_pointcloud = sample_points_from_mesh(obj_path, fps=True, n_pts=4096)
-        save_pointcloud(model_pointcloud, pointcloud_path)
+        gripper_pointcloud = sample_points_from_mesh(gripper_path, fps=True, n_pts=4096)
     else:
-        model_pointcloud = read_pointcloud(pointcloud_path)
+        gripper_pointcloud = read_pointcloud(pointcloud_path)
 
     matcher = Dinov2Matcher(ref_dir=ref_dir, refs=refs,
-                            model_pointcloud=model_pointcloud,
-                            feat_layer=cfg.feat_layer,
+                            model_pointcloud=gripper_pointcloud,
+                            dino_layer=cfg.dino_layer,
                             device=cfg.device,
-                            use_geo_type=cfg.use_geo_type,
-                            layer_3d=cfg.layer_3d)
+                            uni3d_layer=cfg.uni3d_layer,
+                            setting_name=setting_name,
+                            dino_name=dino_name,
+                            uni3d_name=uni3d_name,
+                            uni3d_color=cfg.uni3d_color,
+                            pca=pca,
+                            dino_pca=dino_pca,
+                            uni3d_pca=uni3d_pca,
+                            cfg=cfg)
 
-    sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19,pca=pca,use_geo_type=cfg.use_geo_type)
+
+
+    if cfg.test_data_type == 'real':
+        sim_dataset = TrackingDataset(dataset_location=cfg.test_dir)
+        assert cfg.gripper == 'panda'
+    elif cfg.test_data_type == 'sim':
+        #sim_dataset = SimVideoDataset(gripper=cfg.gripper, features=19)
+        sim_dataset = YCBVDataset(obj_id=cfg.obj_id)
+
     sim_dataloader = DataLoader(sim_dataset, batch_size=1, shuffle=False)
     sim_loader = iter(sim_dataloader)
+
+    time_statistics_dict = {
+        'move data to gpu time':[],
+        'extract feature time': [],
+        'select ref time':[],
+        'match time':[],
+        'pnp time':[],
+        'prepare time':[],
+        'ceres time':[],
+        'total time':[],
+
+        'run model time':[],
+        'interpolate time':[],
+        '3dmesh time':[],
+        'mask time':[]
+    }
 
 
 
@@ -1507,9 +1634,12 @@ def main(cfg):
     inlier_record = []
     while global_step < cfg.max_iter:
         global_step += 1
-        sim = next(sim_loader)
+        try:
+            sim = next(sim_loader)
+        except StopIteration:
+            break
         single_frame_rts = []
-        # if (global_step != 10)&(global_step != 13)&(global_step != 21):
+        # if global_step < 16:
         #     continue
         for i in range(len(sim['rgb'][0])):
             print("Frame %d" % i)
@@ -1517,23 +1647,21 @@ def main(cfg):
                 'rgb': sim['rgb'][:,i:i+1,...],
                 'depth':sim['depth'][:,i:i+1,...],
                 'mask': sim['mask'][:, i:i + 1, ...],
-                'c2w': sim['c2w'][:, i:i + 1, ...],
-                'obj_pose': sim['obj_pose'][:, i:i + 1, ...],
-                'feat': sim['feat'][:, i:i + 1, ...],
+                #'c2w': sim['c2w'][:, i:i + 1, ...],
+                #'obj_pose': sim['obj_pose'][:, i:i + 1, ...],
+                'o2c': sim['pose'][:,i:i+1,...],
+                'feat': None,#sim['feat'][:, i:i + 1, ...],
                 'intrinsics': sim['intrinsics'],
             }
             matches_3ds, rt_matrixs, test_camera_Ks, gt_poses,keypoint_from_depths,fullpoint_from_depths,depths = [], [], [], [], [], [], []
 
             iter_start_time = time.time()
-            iter_read_time = 0.0
 
-            read_start_time = time.time()
 
             # sample = next(iterloader)
 
-            read_time = time.time() - read_start_time
-            iter_read_time += read_time
 
+            run_model_start = time.time()
             if sim is not None:
                 if cfg.record_vis: # & (global_step>cfg.key_number):
                     vis_dict = {}
@@ -1541,17 +1669,25 @@ def main(cfg):
                     vis_dict = None
                 if cfg.refine_mode == 'd':
                     matches_3d_multi_view, rt_matrix_multi_view, test_camera_Ks, gt_poses,depths,num_inlier = run_model(
-                        sim_frame, matcher, cfg, vis_dict,i)
+                        sim_frame, matcher, cfg, vis_dict,i,time_statistics_dict=time_statistics_dict)
                 elif cfg.refine_mode == 'e':
-                    ref_centers,matches_3d_multi_view,rt_matrixs,test_camera_Ks,gt_poses,depths = run_model(sim_frame,matcher,cfg,vis_dict)
+                    ref_centers,matches_3d_multi_view,rt_matrixs,test_camera_Ks,gt_poses,depths = run_model(sim_frame,matcher,cfg,vis_dict,i)
                 else:
-                     matches_3ds, rt_matrixs, test_camera_Ks, gt_poses, depths = run_model(sim_frame,matcher,cfg,vis_dict)
+                     matches_3ds, rt_matrixs, test_camera_Ks, gt_poses, depths = run_model(sim_frame,matcher,cfg,vis_dict,i,time_statistics_dict=time_statistics_dict)
             else:
                 print('sampling failed')
+            run_model_end = time.time()
+            time_statistics_dict['run model time'].append(run_model_end-run_model_start)
             if cfg.pnp_only:
                 #print(rt_matrixs[0].shape, gt_poses[0].shape)
                 all_preds.append(rt_matrixs[0])
                 all_gts.append(np.linalg.inv(gt_poses[0]))
+                pred_pc = transform_pointcloud(gripper_pointcloud, rt_matrixs[0])
+                gt_pc = transform_pointcloud(gripper_pointcloud, np.linalg.inv(gt_poses[0]))
+                scene_pc = depth_map_to_pointcloud(sim['depth'][0][i][:,:,0], sim['mask'][0][i][:,:,0], sim['intrinsics'])
+                save_pointcloud(pred_pc, "./pointclouds/pred_%.3d.txt" % i)
+                save_pointcloud(gt_pc, "./pointclouds/gt_%.3d.txt" % i)
+                save_pointcloud(scene_pc, "./pointclouds/scene_%.3d.txt" % i)
                 inlier_record.append(len(matches_3ds[0]))
                 continue
             qt_pred_for_vis_seq = []
@@ -1561,7 +1697,7 @@ def main(cfg):
                          'gt_pose': gt_poses[0],        # np array
                          'rt_matrix_multi_view': np.stack(rt_matrix_multi_view),    # np array
                          'test_camera_K': test_camera_Ks[0],    # np array
-                         'image_path':sim['video_path'][0]+f'/{i}',
+                         # 'image_path':sim['video_path'][0]+f'/{i}',
                          'depth':depths[0],
                          'num_inlier':num_inlier
                          # 'ref_pose_multi_view':ref_pose_multi_view,
@@ -1581,24 +1717,38 @@ def main(cfg):
                          'gt_pose': gt_poses[0],  # np array
                          'rt_matrix': rt_matrixs[0],  # np array
                          'test_camera_K': test_camera_Ks[0],  # np array
-                         'image_path': sim['video_path'][0]+f'/{i}',
+                         # 'image_path': sim['video_path'][0]+f'/{i}',
                          'depth': depths[0],
                          }
             # frame: matches_3d,gt_pose,rt_matrix,camera_Ks
-            memory_time = time.time()
-            memory_pool.refine_new_frame(frame,record_vis=cfg.record_vis,global_step=global_step,vis_dict=vis_dict)
+
+            memory_pool.refine_new_frame(frame,record_vis=cfg.record_vis,global_step=global_step,vis_dict=vis_dict,time_statistics_dict=time_statistics_dict)
             iter_end_time = time.time()
-            print(f'memory_pool time cost {iter_end_time-memory_time}')     # 大约0.04s
+            time_statistics_dict['total time'].append(iter_end_time-iter_start_time)
+
+            # print(f'memory_pool time cost {iter_end_time-memory_time}')     # 大约0.04s
             print("Iteration {}".format(global_step),' time',iter_end_time-iter_start_time) # 大约0.08s
         if not cfg.pnp_only:
-            result_name = f'{cfg.gripper}_{global_step}'
+            result_name = "obj_%.6d_%.2d" % (cfg.obj_id, global_step)
             memory_pool.eliminate_all_frames_and_compute_result(result_name)
         else:
             compute_results_rt(all_preds,all_gts)
     if cfg.pnp_only:
-        result_name = f'results/memory/{cfg.gripper}_pnponly.txt'
+
+        if not os.path.exists(f'results/{cfg.result_fold_name}'):
+            os.makedirs(f'results/{cfg.result_fold_name}')
         results = np.concatenate([np.stack(all_preds).reshape(-1,16),np.stack(all_gts).reshape(-1,16)],axis=1)
-        np.savetxt(result_name,results)
+        np.savetxt('results/%s/obj_%.6d_pnponly.txt' % (cfg.result_fold_name, cfg.obj_id), results)
+        
+        
+    else:
+        if not os.path.exists(f'results'):
+            os.makedirs(f'results')
+        if not os.path.exists(f'results/{cfg.result_fold_name}'):
+            os.makedirs(f'results/{cfg.result_fold_name}')
+        f_save = open(f'results/{cfg.result_fold_name}/{result_name}_time_dick.pkl','wb')
+        pickle.dump(time_statistics_dict,f_save)
+        f_save.close()
 
 
 
@@ -1607,36 +1757,39 @@ if __name__ == '__main__':
     parser.add_argument('--B', type=int, default=1, help='batch size')
     parser.add_argument('--S', type=int, default=1, help='sequence length')
     parser.add_argument('--shuffle',default=False, action='store_true')
-    parser.add_argument('--ref_dir', type=str, default='/root/autodl-tmp/shiqian/code/render/ycb_320x24')
-    parser.add_argument('--test_dir', type=str, default='/root/autodl-tmp/shiqian/datasets/BOP/ycbv/test')
-    parser.add_argument('--feat_layer', type=str, default=19)
-    parser.add_argument('--max_iter',type=int, default=30)
-    parser.add_argument('--device',type=str,default='cuda:0')
+
+    parser.add_argument('--test_dir', type=str, default='/root/autodl-tmp/shiqian/datastes/BOP/ycbv')
     parser.add_argument('--dtype',default=torch.float32)
-    parser.add_argument('--refine_mode',type=str,default='a')
-    parser.add_argument('--max_number',type=int, default=0)
-    parser.add_argument('--key_number',type=int,default=1)
     parser.add_argument('--record_vis',default=False,action='store_true')
-    parser.add_argument('--view_number',type=int,default=5)
-    parser.add_argument('--use_depth',default=True, action='store_true')
+
     parser.add_argument('--use_full_depth',default=False, action='store_true')  # 这个c++没写,一直关掉
     parser.add_argument('--noise',default='none', action='store_true')   # none random incremental
     parser.add_argument('--adjust',default=False, action='store_true')      # 低精度模式下需要打开，但是有问题
     parser.add_argument('--rela_mode',default='gt',action='store_true',help='gt or pr')     # 高精度模式：gt #低精度模式下：pr，但是有问题
     parser.add_argument('--use_cpp',default=True,action='store_true')
-    parser.add_argument('--single_opt',default=False,action='store_true')   # 单帧优化
-    parser.add_argument('--init',default='pnp')        # rela 或者 pnp，多帧优化时rela，单帧优化时pnp，同时要把refine mode改为a
-    
-    parser.add_argument('--obj_id', type=int, default=1)
+    parser.add_argument('--single_opt',default=False,action='store_true')   # 不用这个
     parser.add_argument('--pnp_only',default=False,action='store_true')
-
-    parser.add_argument('--use_geo_type',default='nope',help='only,nope,both')
-    parser.add_argument('--layer_3d',default=19)
-
-    parser.add_argument('--result_fold_name',default='YCBV_000001')
+    parser.add_argument('--device',type=str,default='cuda:0')
+    parser.add_argument('--uni3d_color',default=False,action='store_true')  # 没效果，不用了
 
 
+    parser.add_argument('--use_depth',default=True, action='store_true')
+    parser.add_argument('--ref_dir', type=str, default='/root/autodl-tmp/shiqian/code/render/ycb_42x20')
+    parser.add_argument('--max_iter',type=int, default=30)
+    parser.add_argument('--refine_mode',type=str,default='a')
+    parser.add_argument('--max_number',type=int, default=0)
+    parser.add_argument('--key_number',type=int,default=1)
+    parser.add_argument('--view_number',type=int,default=10)
+    parser.add_argument('--obj_id', type=int, default=1)
+    parser.add_argument('--init',default='pnp')        # rela 或者 pnp，多帧优化时rela，单帧优化时pnp，同时要把refine mode改为a
+    parser.add_argument('--result_fold_name',default='bop_ycbv')
+
+    # 只用dino时，要用together
+    parser.add_argument('--pca_type', default='together', help='together or respective or nope')
+    parser.add_argument('--dino_layer', type=int, default=19)
+    parser.add_argument('--uni3d_layer',type=int,default=-1)
+    parser.add_argument('--test_data_type',default='sim', help='sim or real')
 
     cfg = parser.parse_args()
     # main_ty(cfg)
-    main(cfg)
+    main_sim(cfg)

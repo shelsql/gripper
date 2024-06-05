@@ -82,7 +82,7 @@ uni3d_use_color=False
     intrinsic_matrix[1, 2] = camera_intrinsic['cy']
     intrinsic_matrix[2, 2] = 1
 
-    rgb_paths = glob.glob(dataset_location + "/*png")
+    rgb_paths = glob.glob(dataset_location + "/00[01]*png")
 
     rgbs = []
     masks = []
@@ -259,11 +259,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dino_layer', default=19,type=int)
 parser.add_argument('--uni3d_layer', default=19,type=int)
 cfg = parser.parse_args()
-gripper_list = ['panda']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
+#gripper_list = ['panda']#['kinova','robotiq2f140','robotiq2f85','robotiq3f','shadowhand'] # #,
 dino_layer = cfg.dino_layer
 uni3d_layer = cfg.uni3d_layer
-for gripper in gripper_list:
-    save_features(f'/home/data/tianshuwu/data/ref_840/{gripper}', dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
+#for gripper in gripper_list:
+    #save_features(f'/home/data/tianshuwu/data/ref_840/{gripper}', dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
+for obj_id in range(1, 23):
+    save_features('/root/autodl-tmp/shiqian/code/render/ycb_42x20/obj_%.6d' % obj_id, dino_layer, device,use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=uni3d_use_color)
 # for gripper in gripper_list:
 #     save_features(f'/root/autodl-tmp/shiqian/code/render/reference_more/{gripper}', 19, "cuda:0",use_3d_feature=True,get_2d_feature=True, uni3d_layer =uni3d_layer,uni3d_use_color=False)
 # path = '/root/autodl-tmp/shiqian/datasets/final_20240419/panda'

@@ -22,6 +22,7 @@ from sklearn.cluster import DBSCAN
 import joblib
 from sklearn.decomposition import PCA
 sys.path.append('/home/data/tianshuwu/code/gripper/try_pybind11/build')
+sys.path.append('/root/autodl-tmp/shiqian/code/gripper/try_pybind11/build')
 from gen_pca_model import PCALowrank
 import try_pybind11
 random.seed(123)

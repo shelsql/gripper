@@ -40,7 +40,7 @@ class YCBVDataset(Dataset):
                         vid_clip["img_ids"].append(img_id)
                         o2c_pose = np.eye(4)
                         o2c_pose[:3,:3] = np.array(obj_info['cam_R_m2c']).reshape(3,3)
-                        o2c_pose[:3,3] = np.array(obj_info['cam_t_m2c'])
+                        o2c_pose[:3,3] = np.array(obj_info['cam_t_m2c']) / 1000.0
                         vid_clip["gt_poses"].append(o2c_pose)
                         vid_clip["obj_ids_in_img"].append(i)
                         break
@@ -57,6 +57,14 @@ class YCBVDataset(Dataset):
         rgb_dir = f"{self.dataset_location}/test/{vid_id}/rgb"
         depth_dir = f"{self.dataset_location}/test/{vid_id}/depth"
         mask_dir = f"{self.dataset_location}/test/{vid_id}/mask_visib"
+        cam_intrinsic_list = json.loads(open(f"{self.dataset_location}/test/{vid_id}/scene_camera.json").read())
+        cam_K = cam_intrinsic_list[list(cam_intrinsic_list.keys())[0]]['cam_K']
+        intrinsics = {
+            "fx": cam_K[0],
+            "fy": cam_K[4],
+            "cx": cam_K[2],
+            "cy": cam_K[5],
+        }
         print("Video id: %s  Obj id: %d" % (vid_id, self.obj_id))
         rgbs = []
         depths = []
@@ -64,8 +72,8 @@ class YCBVDataset(Dataset):
         for i in range(len(img_ids)):
             img_id = int(img_ids[i])
             obj_id_in_img = obj_ids_in_img[i]
-            rgb = cv2.imread(rgb_dir + "/%.6d.png" % img_id)
-            depth = cv2.imread(depth_dir + "/%.6d.png" % img_id, cv2.IMREAD_ANYDEPTH)[:,:,np.newaxis].astype(float) / 1000.0
+            rgb = cv2.cvtColor(cv2.imread(rgb_dir + "/%.6d.png" % img_id), cv2.COLOR_BGR2RGB)
+            depth = cv2.imread(depth_dir + "/%.6d.png" % img_id, cv2.IMREAD_ANYDEPTH)[:,:,np.newaxis].astype(float) / 10000.0
             mask = cv2.imread(mask_dir + "/%.6d_%.6d.png" % (img_id, obj_id_in_img))[:,:,0:1]
             #print("rgb stats:", rgb.shape,rgb.dtype, rgb.max(), rgb.min(), rgb.mean())
             #print("depth stats:", depth.shape,depth.dtype, depth.max(), depth.min(), depth.mean())
@@ -82,7 +90,8 @@ class YCBVDataset(Dataset):
             "rgb": rgbs,
             "depth": depths,
             "mask": masks,
-            "pose": gt_poses
+            "pose": gt_poses,
+            "intrinsics": intrinsics,
         }
         return sample
         

@@ -1,0 +1,5 @@
+/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build/CMakeFiles/try_pybind11.dir
+/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build/CMakeFiles/edit_cache.dir
+/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build/CMakeFiles/rebuild_cache.dir
+/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build/extern/pybind11/CMakeFiles/edit_cache.dir
+/root/autodl-tmp/tianshuwu/gripper/try_pybind11/build/extern/pybind11/CMakeFiles/rebuild_cache.dir
