@@ -18,3 +18,15 @@ results/
 checkpoints/
 vis*/
 data_sample*
+ab*sh
+key*sh
+heph*txt
+layer*sh
+newdata.sh
+real.sh
+ref*sh
+test_memory.sh
+view*sh
+tmp.py
+Pointnet2_PyTorch
+tmp/

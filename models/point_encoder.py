@@ -23,7 +23,6 @@ def knn_point(nsample, xyz, new_xyz):
     Return:
         group_idx: grouped points index, [B, S, nsample]
     """
-    print("xyz:", xyz.shape, "new_xyz:" ,new_xyz.shape)
     sqrdists = square_distance(new_xyz, xyz)
     _, group_idx = torch.topk(sqrdists, nsample, dim = -1, largest=False, sorted=False)
     return group_idx

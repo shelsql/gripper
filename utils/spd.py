@@ -487,14 +487,14 @@ def compute_R_errors_batch(sRT_1, sRT_2):
         shift: [B]. l2 difference of T in centimeter
     """
     # make sure the last row is [0, 0, 0, 1]
-    if sRT_1 is None or sRT_2 is None:
-        return -1
-    try:
-        assert np.all(np.array_equal(sRT_1[:, 3, :], sRT_2[:, 3, :]))
-        assert np.all(np.array_equal(sRT_1[:, 3, :], np.tile(np.array([0, 0, 0, 1]),(sRT_1.shape[0],1))))
-    except AssertionError:
-        print(sRT_1[:, 3, :], sRT_2[:, 3, :])
-        exit()
+    # if sRT_1 is None or sRT_2 is None:
+    #     return -1
+    # try:
+    #     assert np.all(np.array_equal(sRT_1[:, 3, :], sRT_2[:, 3, :]))
+    #     assert np.all(np.array_equal(sRT_1[:, 3, :], np.tile(np.array([0, 0, 0, 1]),(sRT_1.shape[0],1))))
+    # except AssertionError:
+    #     print(sRT_1[:, 3, :], sRT_2[:, 3, :])
+    #     exit()
 
     R1 = sRT_1[:, :3, :3] / np.cbrt(np.linalg.det(sRT_1[:, :3, :3])).reshape(-1,1,1)
     # T1 = sRT_1[:, :3, 3]
@@ -518,6 +518,101 @@ def compute_R_errors_batch(sRT_1, sRT_2):
     # result = (theta, shift)
 
     return theta
+
+def compute_outplane_rotation_errors(sRT_1, sRT_2):
+    '''
+        sRT_1: [B, 4, 4]. batch of homogeneous affine transformations
+        sRT_2: [B, 4, 4]. batch of homogeneous affine transformations
+        # 仅计算非in-plane rotation之间的误差；变换矩阵->旋转向量，之后再求解)(好像不对！)
+        应该把R分解为in plane 和 out plane rotation，然后仅计算out plane rotation之间的距离
+        为什么不直接沿用原来的方法，最后再
+    '''
+    # # make sure the last row is [0, 0, 0, 1]
+    # if sRT_1 is None or sRT_2 is None:
+    #     return -1
+    # try:
+    #     assert np.all(np.array_equal(sRT_1[:, 3, :], sRT_2[:, 3, :]))
+    #     assert np.all(np.array_equal(sRT_1[:, 3, :], np.tile(np.array([0, 0, 0, 1]),(sRT_1.shape[0],1))))
+    # except AssertionError:
+    #     print(sRT_1[:, 3, :], sRT_2[:, 3, :])
+    #     exit()
+
+    R1 = sRT_1[:, :3, :3] / np.cbrt(np.linalg.det(sRT_1[:, :3, :3])).reshape(-1,1,1)    # b,3,3
+    R2 = sRT_2[:, :3, :3] / np.cbrt(np.linalg.det(sRT_2[:, :3, :3])).reshape(-1,1,1)    # b,3,3
+
+    R1_out_plane,_ = decompose_rotation_matrices(R1)
+    R2_out_plane,_ = decompose_rotation_matrices(R2)
+
+
+    R1_out_plane = np.repeat(R1_out_plane[:,np.newaxis,...],R2_out_plane.shape[0],axis=1)
+    R2_out_plane = np.repeat(R2_out_plane[np.newaxis, ...], R1_out_plane.shape[0], axis=0)
+    R = np.matmul(R1_out_plane, R2_out_plane.transpose(0,1,3,2))
+    cos_theta = (np.trace(R, axis1=2, axis2=3) - 1) / 2
+
+    theta = np.arccos(np.clip(cos_theta, -1.0, 1.0)) * 180 / np.pi
+
+    return theta
+
+
+# def batch_rotation_matrix_to_vector(R_batch):
+#     # 如果几乎没有旋转的话，就return(0,0,1)
+#
+#     # Calculate the trace of each rotation matrix
+#     trace = np.trace(R_batch, axis1=1, axis2=2)
+#
+#     # Calculate the rotation angle theta for each matrix
+#     theta = np.arccos((trace - 1) / 2.0)
+#
+#     # Handle the case when theta is close to 0 (identity rotation)
+#     sin_theta = np.sin(theta)
+#     sin_theta[sin_theta == 0] = 1  # Avoid division by zero
+#
+#     # Calculate the rotation axis
+#     ux = (R_batch[:, 2, 1] - R_batch[:, 1, 2]) / (2 * sin_theta)
+#     uy = (R_batch[:, 0, 2] - R_batch[:, 2, 0]) / (2 * sin_theta)
+#     uz = (R_batch[:, 1, 0] - R_batch[:, 0, 1]) / (2 * sin_theta)
+#
+#     # Stack the rotation axes to form the vector u
+#     u = np.stack((ux, uy, uz), axis=1)
+#
+#     # Handle the case when theta is close to pi
+#     mask = np.isclose(theta, np.pi)
+#     if np.any(mask):
+#         eigvals, eigvecs = np.linalg.eig(R_batch[mask])
+#         axis = eigvecs[:, :, np.isclose(eigvals, 1)].real
+#         u[mask] = axis[:, :, 0]
+#
+#     # Compute the rotation vector
+#     rot_vecs = theta[:, np.newaxis] * u
+#
+#     # Handle the case when theta is close to 0 (identity rotation)
+#     rot_vecs[np.isclose(theta, 0)] = 0
+#
+#     return rot_vecs
+
+
+def decompose_rotation_matrices(R_batch):
+    # R_batch: A batch of rotation matrices with shape (N, 3, 3), where N is the number of matrices
+
+    # Calculate the angles theta for in-plane rotation (around z-axis)
+    theta_batch = np.arctan2(R_batch[:, 1, 0], R_batch[:, 0, 0])
+
+    # Construct the in-plane rotation matrices R_in (around z-axis)
+    cos_theta = np.cos(theta_batch)
+    sin_theta = np.sin(theta_batch)
+
+    R_in_batch = np.zeros((R_batch.shape[0], 3, 3))
+    R_in_batch[:, 0, 0] = cos_theta
+    R_in_batch[:, 0, 1] = -sin_theta
+    R_in_batch[:, 1, 0] = sin_theta
+    R_in_batch[:, 1, 1] = cos_theta
+    R_in_batch[:, 2, 2] = 1
+
+    # Calculate the out-of-plane rotation matrices R_out
+    R_in_inv_batch = np.transpose(R_in_batch, axes=(0, 2, 1))  # Since R_in is orthogonal, its inverse is its transpose
+    R_out_batch = np.einsum('nij,njk->nik', R_batch, R_in_inv_batch)
+
+    return R_out_batch, R_in_batch
 
 def compute_RT_overlaps(gt_class_ids, gt_sRT, gt_handle_visibility, pred_class_ids, pred_sRT, synset_names):
     """ Finds overlaps between prediction and ground truth instances.
@@ -1091,6 +1186,28 @@ def project_points(cam_space_coords, intrinsics):
     img_coords = np.dot(K, homo_coords.T).T # N, 3
     img_coords = img_coords[:,:2] / img_coords[:,2:3]
     img_coords = img_coords.reshape(B, N, 2)
+    return img_coords
+
+
+def project_points_float(cam_space_coords, intrinsics):
+    # Unpack intrinsic matrix
+    fx = intrinsics['fx']
+    fy = intrinsics['fy']
+    cx = intrinsics['cx']
+    cy = intrinsics['cy']
+
+    K = np.zeros((3, 4))
+    K[0, 0] = fx
+    K[1, 1] = fy
+    K[0, 2] = cx
+    K[1, 2] = cy
+    K[2, 2] = 1
+
+    N, D = cam_space_coords.shape
+    ones = np.ones((cam_space_coords.shape[0], 1))
+    homo_coords = np.concatenate([cam_space_coords, ones], axis=1)  # N, 4
+    img_coords = np.dot(K, homo_coords.T).T  # N, 3
+    img_coords = img_coords[:, :2] / img_coords[:, 2:3]
     return img_coords
 
 def get_2dbboxes(masks):

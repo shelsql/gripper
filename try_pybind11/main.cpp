@@ -340,7 +340,9 @@ py::tuple optimize_step1_nodepth(
 
 struct ADJUST_COST {
     ADJUST_COST(            const double* match3d,
+                            // 在这里多加一个各点的法向量，之后一起转就行
                             const double* camera_params,     // 4 fx,cx,fy,cy 无所谓，反正都一样
+
                               const double* depth,    // 360*640     depth image of frame j
                               const double* keypoint    // 3
     ) :
@@ -384,11 +386,11 @@ struct ADJUST_COST {
 
 
         // 左乘Ti逆
-        T key3d_debug[3];
-        ceres::QuaternionRotatePoint(qi_inv,keypoint_tmp,key3d_debug);
-        T t_tmp1[3];
-        ceres::QuaternionRotatePoint(qi_inv,ti,t_tmp1);
-        key3d_debug[0] -= t_tmp1[0]; key3d_debug[1] -= t_tmp1[1]; key3d_debug[2] -= t_tmp1[2];
+//        T key3d_debug[3];
+//        ceres::QuaternionRotatePoint(qi_inv,keypoint_tmp,key3d_debug);
+//        T t_tmp1[3];
+//        ceres::QuaternionRotatePoint(qi_inv,ti,t_tmp1);
+//        key3d_debug[0] -= t_tmp1[0]; key3d_debug[1] -= t_tmp1[1]; key3d_debug[2] -= t_tmp1[2];
         // 调试
 //        ceres::QuaternionRotatePoint(qi,key3d,key3d);
 //        key3d[0] += ti[0];key3d[1] += ti[1];key3d[2] += ti[2];
@@ -410,18 +412,35 @@ struct ADJUST_COST {
 
         int idx = ceres::Jet<double,14>(key2d[0]).a;
         int idy = ceres::Jet<double,14>(key2d[1]).a;
+
+        // 到图外了，滤去
         if (idx > 639){
-            idx = 639;
+            residual[0] = T(0.0);
+            residual[1] = T(0.0);
+            residual[2] = T(0.0);
+            return true;
         }
         if(idx<0){
-            idx = 0;
+            residual[0] = T(0.0);
+            residual[1] = T(0.0);
+            residual[2] = T(0.0);
+            return true;
         }
         if(idy>359){
-            idy=359;
+            residual[0] = T(0.0);
+            residual[1] = T(0.0);
+            residual[2] = T(0.0);
+            return true;
         }
         if(idy<0){
-            idy=0;
+            residual[0] = T(0.0);
+            residual[1] = T(0.0);
+            residual[2] = T(0.0);
+            return true;
         }
+
+        // 用法线方向再判断一下
+
 //        cout<<idx<<"and"<<idy<<endl;
 
         T depth_tmp = T(_depth[idy*640+idx]);

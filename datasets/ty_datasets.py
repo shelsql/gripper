@@ -87,7 +87,7 @@ class TrackingDataset(Dataset):
         super().__init__()
         print("Loading pose tracking dataset...")
         self.dataset_location = dataset_location
-        self.video_dirs = glob.glob(dataset_location + "/*")
+        self.video_dirs = [glob.glob(dataset_location + "/*")[i] for i in [0,1,4,8]]
         print("Found %d videos in %s" % (len(self.video_dirs), self.dataset_location))
 
         self.img_paths = {}
@@ -111,7 +111,7 @@ class TrackingDataset(Dataset):
         camera_intrinsic = json.loads(open(camera_intrinsic_path).read())
         camera_intrinsic = camera_intrinsic['camera_settings'][0]['intrinsic_settings']
 
-        print(video_dir, imgid_list)
+        # print(video_dir, imgid_list)
 
         rgbs = []
         depths = []
@@ -120,13 +120,14 @@ class TrackingDataset(Dataset):
         npys = []
         c2ws = []
         obj_poses = []
+        paths = []
 
         for id in imgid_list:
             path = video_dir + "/" + id[:-1]
 
             rgb_path = path + ".png"
             depth_path = path + ".exr"
-            mask_path = path + "_mask.exr"
+            mask_path = path + "_newmask.png"
             kpts_path = path + ".json"
             npy_path = path + ".npy"
 
@@ -144,6 +145,7 @@ class TrackingDataset(Dataset):
             masks.append(mask)
             kptss.append(kpts)
             npys.append(npy)
+            paths.append(rgb_path)
 
             gripper_info = kpts[0]['keypoints'][8]
             gripper_t = torch.tensor(gripper_info["location_wrt_cam"]).numpy()
@@ -175,7 +177,7 @@ class TrackingDataset(Dataset):
             "obj_pose": obj_poses,
             # "feat": feats,
             "intrinsics": camera_intrinsic,
-            "path": path
+            "path": paths
         }
 
         return sample

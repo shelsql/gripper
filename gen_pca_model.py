@@ -236,13 +236,13 @@ class ReferenceDataset(Dataset):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gripper_name',default='robotiq2f85',  help='single gripper_name')
+    parser.add_argument('--gripper_name',default='heph',  help='single gripper_name')
     parser.add_argument('--pca_type',default='torch',help='sklearn or torch')
     parser.add_argument('--dino_layer',default=19,type=int)
     parser.add_argument('--uni3d_layer', default=-1, type=int)
-    parser.add_argument('--ref_dir',default=f"/home/data/tianshuwu/data/ref_1920")
+    parser.add_argument('--ref_dir',default=f"/home/data/tianshuwu/data/ref_960")
     cfg = parser.parse_args()
-    gripper_name = ['panda']#['robotiq2f140','robotiq2f85','robotiq3f','shadowhand','kinova','panda']
+    gripper_name = ['heph_new']
     # gripper = cfg.gripper_name
 
     for gripper in gripper_name:

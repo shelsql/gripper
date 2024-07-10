@@ -313,6 +313,7 @@ class SimVideoDataset(Dataset):
         masks = []
         c2ws = []
         obj_poses = []
+        paths = []
         # if self.features > 0:
         #     feats = []
         
@@ -335,7 +336,7 @@ class SimVideoDataset(Dataset):
             c2w = np.load(c2w_path)
             obj_pose = np.load(obj_pose_path)
 
-            
+            paths.append(rgb_path)
             rgbs.append(rgb)
             depths.append(depth)
             masks.append(mask)
@@ -366,7 +367,8 @@ class SimVideoDataset(Dataset):
             "gripper": self.gripper,
             "vid_type": vid_type,
             "vid_num": vid_num,
-            "video_path":video_path
+            "video_path":video_path,
+            'path': paths
         }
         
         return sample
